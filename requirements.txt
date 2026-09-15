@@ -1,0 +1,14 @@
+# Agent orchestration
+semantic-kernel>=1.44,<2
+openai>=1.60          # only as the transport SK points at Groq's OpenAI-compatible API
+
+# Retrieval
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+torch>=2.2            # CPU wheels are the default on Linux/HF Spaces
+
+# Data + app
+pandas>=2.0
+numpy>=1.26
+requests>=2.31
+gradio>=6.0           # 6.x removed Chatbot(type=...); app.py emits the messages format
