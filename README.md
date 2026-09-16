@@ -229,7 +229,7 @@ minimum narrative length.
 | Orchestration | Semantic Kernel (Python) | $0 |
 | LLM | Groq · `openai/gpt-oss-120b` | $0 free tier |
 | App | Gradio | $0 |
-| Hosting | Hugging Face Spaces, CPU Basic | $0 |
+| Hosting | Render, free Python web service | $0 |
 
 Free tiers were a deliberate constraint, not a limitation — they force the
 design decisions that make the system defensible: local deterministic scoring
@@ -238,18 +238,41 @@ that needs tuning, and a fallback path for when the inference tier rate-limits.
 
 ---
 
-## Deploying to Hugging Face Spaces
+## Deploying
 
-1. Create a free HF account (email only, no card).
-2. **New Space → Gradio SDK → CPU Basic (free)**.
-3. Push this repo to the Space, or connect the GitHub repo directly.
-4. Add `GROQ_API_KEY` under **Settings → Variables and secrets**. Never commit it.
-5. The built index in `index/` is committed (~33 MB), so the Space boots without
+**Hugging Face Spaces now requires a paid (Pro) plan to create a Gradio or
+Docker Space** — only Static Spaces are free (verified against HF's own docs;
+this changed at some point after this project's spec was written, when Spaces
+were free on CPU Basic hardware regardless of SDK). The one free-tier
+exception, ZeroGPU, doesn't fit here: it requires an account older than 30
+days and exists for GPU-bound demos, not this app's CPU-only workload. If you
+have HF Pro already, the original steps still work:
+
+1. **New Space → Gradio SDK → CPU Basic**.
+2. Push this repo to the Space, or connect the GitHub repo directly.
+3. Add `GROQ_API_KEY` under **Settings → Variables and secrets**. Never commit it.
+4. The built index in `index/` is committed (~33 MB), so the Space boots without
    re-fetching CFPB data. `index/embeddings.npy` is *not* committed — those
    vectors already live inside `complaints.faiss` and are reconstructed at load
    time. To keep the repo lean instead, uncomment `index/` in `.gitignore` and
    run the two build commands on first boot — expect a slow cold start.
-6. Free Spaces sleep when idle. Open the link a minute before demoing.
+5. Free Spaces sleep when idle. Open the link a minute before demoing.
+
+### Deploying for free instead — Render
+
+[Render](https://render.com)'s free tier hosts a native Python web service (no
+Docker required), with no card needed to get started:
+
+1. Push this repo to GitHub (see below), then at [render.com](https://render.com):
+   **New → Web Service → connect the GitHub repo**.
+2. **Build command:** `pip install -r requirements.txt`
+   **Start command:** `python app.py`
+   (`app.py` already reads Render's `PORT` env var — see [app/app.py](app/app.py).)
+3. Add `GROQ_API_KEY` under the service's **Environment** tab.
+4. Render's free tier spins the service down after 15 minutes idle and takes
+   about a minute to wake back up on the next request — the same "warm it up
+   before demoing" tradeoff as HF's free tier, on a host that doesn't require
+   a paid plan to run a Gradio app at all.
 
 ---
 

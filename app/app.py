@@ -13,6 +13,8 @@ is the part that is actually mine.
 
 from __future__ import annotations
 
+import os
+
 import gradio as gr
 import pandas as pd
 
@@ -265,7 +267,12 @@ def build_ui() -> gr.Blocks:
 
 
 def main() -> None:
-    build_ui().launch(server_name="0.0.0.0")
+    # Render (and most non-HF-Spaces PaaS hosts) assign a dynamic port via the
+    # PORT env var and route traffic to it; Hugging Face Spaces doesn't set
+    # this, so the 7860 default (Gradio's own, and what Spaces expects) still
+    # applies for local dev and HF hosting.
+    port = int(os.environ.get("PORT", 7860))
+    build_ui().launch(server_name="0.0.0.0", server_port=port)
 
 
 if __name__ == "__main__":
