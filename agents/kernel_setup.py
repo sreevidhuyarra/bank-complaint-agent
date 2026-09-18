@@ -140,12 +140,29 @@ def build_kernel(plugins: dict[str, object] | None = None,
 
 
 def execution_settings(config: LlmConfig | None = None,
-                       auto_tools: bool = True) -> PromptExecutionSettings:
-    """Low temperature and auto tool-calling for every agent.
+                       tool_choice: str = "auto") -> PromptExecutionSettings:
+    """Low temperature and tool-calling behavior for an agent.
 
-    `ChatCompletionAgent` already defaults to `FunctionChoiceBehavior.Auto`, but
-    it does not set a temperature, and an analyst brief that changes wording on
-    every run is not something a reviewer can sign off on.
+    `tool_choice`:
+      "auto"     model may call a tool or just answer in text. Right for
+                 SynthesisAgent, whose whole job is answering in text — it has
+                 one optional escape-hatch function it should use rarely, not
+                 be forced into every turn.
+      "required" model MUST call one of its declared functions this turn —
+                 maps to Gemini's `function_calling_config.mode = "ANY"` (see
+                 google/shared_utils.py's FUNCTION_CHOICE_TYPE_TO_GOOGLE_
+                 FUNCTION_CALLING_MODE) and to a forced tool_choice on OpenAI-
+                 shaped APIs. Right for the Orchestrator and the three
+                 specialists: every one of them is designed to always end a
+                 turn by calling either a domain tool or a transfer_to_*
+                 function, never by just answering in prose. `Auto` permits
+                 that "just answer instead of routing" failure — the
+                 "Orchestrator ended the run without routing to a specialist"
+                 sentinel this project hit repeatedly on both Groq and Gemini
+                 is exactly that: the model was *allowed* to skip the tool
+                 call, and sometimes did. `Required` removes the option
+                 instead of hoping a prompt instruction is enough.
+      "none"     no tools exposed at all.
     """
     config = config or LlmConfig()
 
@@ -164,22 +181,25 @@ def execution_settings(config: LlmConfig | None = None,
             max_tokens=config.max_tokens,
         )
 
-    if auto_tools:
-        # SK forces tool_choice="none" once a turn exceeds this many automatic
-        # invocation rounds, to make the model wrap up. gpt-oss models on Groq
-        # sometimes try to call a tool anyway on that final round, which Groq
-        # then rejects outright ("Tool choice is none, but model called a
-        # tool"). A higher ceiling makes that forced cutoff rare in practice for
-        # the 1-3 tool calls a turn here actually needs. Untested whether Gemini
-        # ever needs this same headroom — kept the same for both providers until
-        # proven otherwise.
+    # SK forces tool_choice="none" once a turn exceeds this many automatic
+    # invocation rounds, to make the model wrap up. gpt-oss models on Groq
+    # sometimes try to call a tool anyway on that final round, which Groq then
+    # rejects outright ("Tool choice is none, but model called a tool"). A
+    # higher ceiling makes that forced cutoff rare in practice for the 1-3
+    # tool calls a turn here actually needs — kept for both `auto` and
+    # `required` so a specialist that legitimately needs several tool calls
+    # (score_complaints, then transfer, say) doesn't get cut off mid-sequence.
+    if tool_choice == "required":
+        settings.function_choice_behavior = FunctionChoiceBehavior.Required(maximum_auto_invoke_attempts=10)
+    elif tool_choice == "auto":
         settings.function_choice_behavior = FunctionChoiceBehavior.Auto(maximum_auto_invoke_attempts=10)
+    # "none" (or anything else): leave function_choice_behavior unset.
     return settings
 
 
-def default_arguments(config: LlmConfig | None = None) -> KernelArguments:
+def default_arguments(config: LlmConfig | None = None, tool_choice: str = "auto") -> KernelArguments:
     """KernelArguments carrying the shared execution settings."""
-    return KernelArguments(settings=execution_settings(config))
+    return KernelArguments(settings=execution_settings(config, tool_choice))
 
 
 def llm_available(provider: str | None = None) -> bool:

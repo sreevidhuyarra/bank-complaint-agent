@@ -152,7 +152,9 @@ def build_agent() -> ChatCompletionAgent:
     tools = RiskTools()
     return ChatCompletionAgent(
         kernel=build_kernel(),
-        arguments=default_arguments(),
+        # "required": must always either score or transfer — never just
+        # answer in prose and silently end the conversation.
+        arguments=default_arguments(tool_choice="required"),
         name=NAME,
         description="Scores complaint language for urgency, distress and escalation risk.",
         instructions=INSTRUCTIONS,

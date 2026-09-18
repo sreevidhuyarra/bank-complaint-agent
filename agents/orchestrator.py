@@ -109,7 +109,9 @@ class Brief:
 def build_orchestrator_agent() -> ChatCompletionAgent:
     return ChatCompletionAgent(
         kernel=build_kernel(),
-        arguments=default_arguments(),
+        # "required": the Orchestrator's only job is routing — it must never
+        # just answer in prose instead of calling a transfer_to_* function.
+        arguments=default_arguments(tool_choice="required"),
         name=NAME,
         description="Routes analyst questions to the right specialist agents.",
         instructions=INSTRUCTIONS,

@@ -79,6 +79,11 @@ _CONFIG = LlmConfig(max_tokens=1600)
 def build_agent() -> ChatCompletionAgent:
     return ChatCompletionAgent(
         kernel=build_kernel(config=_CONFIG),
+        # Deliberately left at the "auto" default, unlike every other agent in
+        # this project — Synthesis's whole job is answering in prose. It has
+        # one optional escape-hatch transfer for when it's reached with
+        # nothing to work with, but forcing a tool call every turn would
+        # prevent it from ever writing the actual brief.
         arguments=default_arguments(_CONFIG),
         name=NAME,
         description="Compiles specialist findings into a short, cited analyst brief.",

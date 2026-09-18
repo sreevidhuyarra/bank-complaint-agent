@@ -121,7 +121,9 @@ def build_agent() -> ChatCompletionAgent:
         # The agent registers `plugins` on its kernel itself — adding them to the
         # kernel here as well would expose every tool to the model twice.
         kernel=build_kernel(),
-        arguments=default_arguments(),
+        # "required": must always either search or transfer — never just
+        # answer in prose and silently end the conversation.
+        arguments=default_arguments(tool_choice="required"),
         name=NAME,
         description="Finds relevant CFPB complaint narratives by semantic search.",
         instructions=INSTRUCTIONS,

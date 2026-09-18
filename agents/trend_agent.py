@@ -203,7 +203,9 @@ def build_agent() -> ChatCompletionAgent:
     tools = TrendTools()
     return ChatCompletionAgent(
         kernel=build_kernel(),
-        arguments=default_arguments(),
+        # "required": must always either aggregate or transfer — never just
+        # answer in prose and silently end the conversation.
+        arguments=default_arguments(tool_choice="required"),
         name=NAME,
         description="Computes complaint volume, issue mix and quarter-over-quarter movement.",
         instructions=INSTRUCTIONS,
