@@ -186,7 +186,39 @@ solid — it's what a genuinely free tool-calling model tier costs on Groq today
 Building around it, rather than assuming a reliable model, is the actual
 engineering content here.
 
----
+### Switching providers — Groq vs. Google AI Studio
+
+`config.LLM_PROVIDER` (env var, default `groq`) selects which LLM backs every
+agent. Setting it to `google` switches the whole team to Gemini via Google AI
+Studio, through Semantic Kernel's own native `GoogleAIChatCompletion`
+connector — no OpenAI-shim trick needed there, since Google (like Anthropic)
+ships a first-party SK connector rather than mimicking OpenAI's wire format.
+The switch touches nothing outside [agents/kernel_setup.py](agents/kernel_setup.py):
+every agent, tool, and the handoff graph are provider-agnostic.
+
+```bash
+pip install "google-genai>=1.51,<1.75"   # not needed for the default Groq path
+export LLM_PROVIDER=google
+export GOOGLE_AI_API_KEY=...             # free key: https://aistudio.google.com
+python app.py
+```
+
+Two things this hasn't been validated against yet, since they need a real
+Google key to observe:
+
+- **Handoff-mode reliability.** The connector supports function calling and
+  streaming (confirmed by reading its source), but the *specific* failure
+  modes that made Groq's `gpt-oss-120b` unreliable for handoff — dropped
+  tool-name prefixes, malformed JSON arguments, ignoring a forced stop — are
+  model-specific quirks nobody documents. Gemini may or may not hit the same
+  ones; only a live test says for sure.
+- **The exact free-tier rate limits and the `Retry-After` shape of a real 429.**
+  `with_rate_limit_retry` recognizes Google's error types by reading the
+  `google-genai` package's source (`google.genai.errors.APIError.code`), but
+  the wait-time parsing for Google (a `Retry-After` header guess) is unverified
+  against an actual captured error, unlike Groq's regex, which is tuned
+  against real ones. Check your account's actual limits at
+  `aistudio.google.com/rate-limit` rather than assuming Groq's shape carries over.
 
 ## Running it
 

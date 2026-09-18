@@ -1,6 +1,9 @@
 # Agent orchestration
 semantic-kernel>=1.44,<2
-openai>=1.60          # only as the transport SK points at Groq's OpenAI-compatible API
+openai>=1.60          # transport for the Groq provider (LLM_PROVIDER=groq, the default)
+
+# Uncomment for the Google provider (LLM_PROVIDER=google) — not needed for Groq.
+# google-genai>=1.51,<1.75
 
 # Retrieval
 sentence-transformers>=3.0
