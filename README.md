@@ -186,6 +186,37 @@ solid — it's what a genuinely free tool-calling model tier costs on Groq today
 Building around it, rather than assuming a reliable model, is the actual
 engineering content here.
 
+### Routing silently skipped — a separate, deeper issue than the budget above
+
+The single most persistent failure across this whole project — "Task is
+completed with summary: No handoff agent name provided..." — isn't caused by
+Groq's tight budget above. It hit Gemini too, with none of that budget
+pressure, so it has a different root cause: `FunctionChoiceBehavior.Auto()`
+genuinely *permits* an agent to answer in plain text instead of calling a
+tool, and no prompt wording forces compliance — it's a real option the model
+is free to take, on either provider. The fix isn't a patch, it's a policy
+change: [agents/kernel_setup.py](agents/kernel_setup.py) now runs the
+Orchestrator and all three specialists — every one of which is designed to
+always end its turn by calling a domain tool or a `transfer_to_*` — with
+`FunctionChoiceBehavior.Required()` instead, which maps to a genuinely forced
+tool call (Gemini's `function_calling_config.mode = "ANY"`; a forced
+`tool_choice` on Groq's OpenAI-shaped API). SynthesisAgent is the deliberate
+exception — its entire job is answering in prose, so it keeps `Auto()`.
+
+Two structural gaps compounded this on the Gemini side specifically, both real
+bugs independent of the model itself: every specialist's prompt covered
+routing to *another specialist* for more analysis, but never covered "I have
+nothing further to add" — so a specialist invoked a second time (e.g.
+Retrieval, asked to fetch examples for a trend Trend already found) would just
+summarize in prose and end the run with no transfer at all. And SynthesisAgent
+had *zero* outgoing edges in the handoff graph despite the Orchestrator being
+allowed to route to it as the very first move — so if that happened before any
+specialist had gathered real evidence, Synthesis's only option was to give up
+via `complete_task` with no way to ask for real routing first. Both are fixed
+now: every specialist is explicitly told to close out to Synthesis, and
+Synthesis can hand back to the Orchestrator when it's reached with nothing to
+work with.
+
 ### Switching providers — Groq vs. Google AI Studio
 
 `config.LLM_PROVIDER` (env var, default `groq`) selects which LLM backs every
