@@ -203,15 +203,27 @@ export GOOGLE_AI_API_KEY=...             # free key: https://aistudio.google.com
 python app.py
 ```
 
-Two things this hasn't been validated against yet, since they need a real
-Google key to observe:
+**A real bug this surfaced, and its fix.** The first live test against a real
+key hit a hardcoded `role="function"` in Semantic Kernel 1.44.1's own
+`GoogleAIChatCompletion._prepare_chat_history_for_request` (the latest
+published SK release at the time — no newer version exists to pull the fix
+from) — Google's current API rejects that role outright: `400 ... "Role
+'function' is not supported. Please use a valid role: SYSTEM, ..., MODEL,
+USER."` [agents/google_compat.py](agents/google_compat.py) subclasses the
+connector with just that one line changed to `role="user"` — the role
+Gemini's own function-calling convention uses for returning a tool result —
+everything else in the connector (request building, response parsing,
+streaming) is untouched. `kernel_setup.py`'s Google branch uses this patched
+class transparently; nothing above it needs to know the patch exists.
 
-- **Handoff-mode reliability.** The connector supports function calling and
-  streaming (confirmed by reading its source), but the *specific* failure
-  modes that made Groq's `gpt-oss-120b` unreliable for handoff — dropped
-  tool-name prefixes, malformed JSON arguments, ignoring a forced stop — are
-  model-specific quirks nobody documents. Gemini may or may not hit the same
-  ones; only a live test says for sure.
+Two things this still hasn't been validated against, since they need a real
+Google key and a genuinely completed run to observe:
+
+- **Handoff-mode reliability end-to-end.** The role bug above is now fixed,
+  but the *other* failure modes that made Groq's `gpt-oss-120b` unreliable for
+  handoff — dropped tool-name prefixes, malformed JSON arguments, ignoring a
+  forced stop — are separate, model-specific quirks nobody documents. Gemini
+  may or may not hit any of them; only a full live run says for sure.
 - **The exact free-tier rate limits and the `Retry-After` shape of a real 429.**
   `with_rate_limit_retry` recognizes Google's error types by reading the
   `google-genai` package's source (`google.genai.errors.APIError.code`), but
@@ -321,8 +333,9 @@ bank-complaint-agent/
 │   ├── embeddings.py          # sentence-transformers wrapper
 │   └── linguistic_risk.py     # hedging / urgency / harm / SLOR scoring
 ├── agents/
-│   ├── kernel_setup.py        # Semantic Kernel + Groq wiring, retry/backoff
-│   ├── groq_compat.py         # tool-call name compatibility shim (see README)
+│   ├── kernel_setup.py        # Semantic Kernel wiring, provider switch, retry/backoff
+│   ├── groq_compat.py         # Groq tool-call name compatibility shim (see README)
+│   ├── google_compat.py       # Gemini role="function" bug fix (see README)
 │   ├── orchestrator.py        # handoff graph, pipeline fallback
 │   ├── retrieval_agent.py
 │   ├── risk_agent.py

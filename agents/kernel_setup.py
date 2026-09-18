@@ -111,9 +111,9 @@ def _build_groq_chat_service(config: LlmConfig) -> OpenAIChatCompletion:
     )
 
 
-def _build_google_chat_service(config: LlmConfig) -> "GoogleAIChatCompletion":
+def _build_google_chat_service(config: LlmConfig) -> "PatchedGoogleAIChatCompletion":
     # Imported lazily so a Groq-only install never needs google-genai on disk.
-    from semantic_kernel.connectors.ai.google.google_ai import GoogleAIChatCompletion
+    from agents.google_compat import PatchedGoogleAIChatCompletion
 
     api_key = google_api_key()
     if not api_key:
@@ -122,7 +122,7 @@ def _build_google_chat_service(config: LlmConfig) -> "GoogleAIChatCompletion":
             "and set it in your environment (or as a Space secret) before running the agents."
         )
 
-    return GoogleAIChatCompletion(
+    return PatchedGoogleAIChatCompletion(
         service_id=SERVICE_ID,
         gemini_model_id=config.model,
         api_key=api_key,
