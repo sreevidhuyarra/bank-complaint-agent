@@ -266,15 +266,22 @@ def _best_answer(trace: list[Turn], final) -> str:
     return text.strip() or (trace[-1].content if trace else "No response produced.")
 
 
-# The literal wrap-up SK emits when an agent responds with plain text instead of
-# calling a transfer/complete_task function — i.e. handoff routing never
-# actually happened. It reads as a real sentence (>80 chars), so the length
-# check alone lets it through; this catches it explicitly instead.
-_NO_HANDOFF_SENTINEL = "no handoff agent name provided"
+# Semantic Kernel's own _complete_task hardcodes this exact prefix on every
+# call, whatever the summary text says (handoffs.py:
+# `content=f"Task is completed with summary: {task_summary}"`) — confirmed by
+# reading the source, not guessed. A live run showed why checking for it
+# generally beats matching one specific summary string: the framework's own
+# "no handoff agent name provided" wrap-up is one possible summary, but
+# Synthesis can also call complete_task itself with a confident-sounding
+# summary of its own ("Successfully evaluated...") instead of ever writing the
+# actual multi-section brief — same underlying problem (complete_task standing
+# in for the real deliverable), different words. Matching the prefix catches
+# every variant, past or future, instead of one observed wording.
+_COMPLETE_TASK_PREFIX = "task is completed with summary:"
 
 
 def _is_real_brief(text: str) -> bool:
-    return bool(text) and len(text) > 80 and _NO_HANDOFF_SENTINEL not in text.lower()
+    return bool(text) and len(text) > 80 and not text.lower().startswith(_COMPLETE_TASK_PREFIX)
 
 
 # Complaint IDs are always cited as bracketed lists in this format, per
