@@ -77,14 +77,17 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 # agents/kernel_setup.py's provider branch.
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq").lower()
 
-# Best-effort default — Google's free tier explicitly recommends Flash-Lite
-# models for agentic/tool-calling workloads, but the exact model ID string a
-# given account's API can reach is worth confirming yourself: list your
-# account's available models at https://aistudio.google.com or via
-# `client.models.list()` before assuming this one is still current (the same
-# "don't trust a hardcoded model name" lesson Groq's retirement of
-# llama-3.3-70b-versatile already taught this project once).
-GOOGLE_MODEL = os.environ.get("GOOGLE_MODEL", "gemini-2.5-flash-lite")
+# gemini-2.5-flash-lite was the first default here and was retired for new
+# accounts almost immediately — confirmed live: a real key got back
+# `404 ... "This model models/gemini-2.5-flash-lite is no longer available to
+# new users. Please update your code to use models/gemini-3.5-flash-lite"`,
+# straight from Google's own error message. That replacement is now the
+# default, but the same caution applies to it in turn — list your account's
+# actual available models at https://aistudio.google.com or via
+# `client.models.list()` before assuming any hardcoded name stays current (the
+# same lesson Groq's retirement of llama-3.3-70b-versatile already taught this
+# project once).
+GOOGLE_MODEL = os.environ.get("GOOGLE_MODEL", "gemini-3.5-flash-lite")
 
 
 def groq_api_key() -> str | None:
