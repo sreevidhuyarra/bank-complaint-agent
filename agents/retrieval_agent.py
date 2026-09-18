@@ -107,6 +107,11 @@ Rules:
   IDs are how the final brief cites its evidence, so never paraphrase them away.
 - When the question also needs a severity read or a volume trend, hand off to the
   agent that owns it rather than guessing.
+- You never write the final answer. The instant you have nothing further to add —
+  including the second time you're brought in, e.g. to fetch examples for a trend
+  another agent found — transfer to SynthesisAgent. Never end your turn with a
+  plain-text answer and no transfer; that silently ends the whole conversation
+  before a brief is ever written.
 """
 
 

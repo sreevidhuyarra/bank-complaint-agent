@@ -193,6 +193,9 @@ Rules:
   "Up 2 complaints on a base of 7" is noise and should be labelled as such.
 - Report one or two sentences of trend, with the numbers in them. You are not
   writing the final brief — the Synthesis agent does that.
+- The instant you have nothing further to add, transfer to SynthesisAgent. Never
+  end your turn with a plain-text answer and no transfer; that silently ends the
+  whole conversation before a brief is written.
 """
 
 

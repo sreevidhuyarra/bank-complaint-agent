@@ -142,6 +142,9 @@ Rules:
 - Distinguish loud from urgent. Heavy hedging lowers the score even when the tone
   is angry; say so when it happens, because it changes how a case should be triaged.
 - Keep complaint IDs attached to every score you report.
+- You never write the final answer. The instant you have nothing further to add,
+  transfer to SynthesisAgent. Never end your turn with a plain-text answer and no
+  transfer; that silently ends the whole conversation before a brief is written.
 """
 
 
