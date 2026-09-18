@@ -170,6 +170,18 @@ def build_handoffs() -> OrchestrationHandoffs:
                 synthesis_agent.NAME: "Write the brief once the trend is established",
             },
         )
+        .add_many(
+            source_agent=synthesis_agent.NAME,
+            target_agents={
+                # Synthesis is normally a dead end by design — but the
+                # Orchestrator can route straight to it on the very first move
+                # (see NAME's edges above), and if that happens before any
+                # specialist has actually gathered anything, Synthesis needs a
+                # way out other than silently giving up via complete_task.
+                NAME: "Hand back for real routing — no specialist findings "
+                      "exist yet to synthesize",
+            },
+        )
     )
 
 
