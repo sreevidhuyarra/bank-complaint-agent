@@ -74,6 +74,10 @@ Routing rules:
   SynthesisAgent regardless — it is instructed to say plainly when a question
   is outside what the data supports. A clear "this data can't answer that"
   brief is always the right outcome, never silence.
+- If SynthesisAgent hands control back to you, do not restart from
+  RetrievalAgent — the specialists already ran and their findings are still
+  earlier in this same conversation. Transfer straight back to SynthesisAgent;
+  re-running the whole chain wastes work and risks looping.
 
 Transfer immediately. Do not narrate your routing decision at length.
 """
