@@ -240,6 +240,13 @@ async def run_handoff(
             "No brief was produced — the handoff routing didn't reach the "
             "Synthesis agent. Try again, or use pipeline mode."
         )
+    elif fake_ids := _fabricated_citations(answer):
+        # Worse than a routing failure: this looks like a clean success. Never
+        # show a fabricated citation as trustworthy — see _fabricated_citations.
+        error = (
+            f"The brief cited complaint ID(s) not found in the indexed data "
+            f"(likely fabricated): {', '.join(fake_ids)}. Its claims are not verified."
+        )
     return Brief(question=question, answer=answer, mode="handoff", trace=trace, error=error)
 
 
@@ -268,6 +275,44 @@ _NO_HANDOFF_SENTINEL = "no handoff agent name provided"
 
 def _is_real_brief(text: str) -> bool:
     return bool(text) and len(text) > 80 and _NO_HANDOFF_SENTINEL not in text.lower()
+
+
+# Complaint IDs are always cited as bracketed lists in this format, per
+# Synthesis's own instructed shape: "[24747089, 24746002]". Matching that
+# format (rather than any 6+ digit number anywhere) avoids false positives on
+# percentages, dates, or dollar amounts elsewhere in the prose.
+_CITATION_GROUP_RE = re.compile(r"\[([\d,\s]+)\]")
+
+
+def _cited_complaint_ids(text: str) -> set[str]:
+    ids: set[str] = set()
+    for group in _CITATION_GROUP_RE.finditer(text):
+        for token in group.group(1).split(","):
+            token = token.strip()
+            if token.isdigit():
+                ids.add(token)
+    return ids
+
+
+def _fabricated_citations(text: str) -> list[str]:
+    """Cited complaint IDs that don't actually exist in the indexed corpus.
+
+    A model under pressure to satisfy "every theme needs an ID" can invent a
+    plausible-looking number instead of admitting it has none — confirmed live:
+    a brief cited three IDs (7890123-7890125) that don't exist anywhere in the
+    index, in the same response that correctly wrote "not assessed" for a
+    different section. Prompt instructions alone don't reliably prevent this,
+    so every brief's citations are checked against the real index — the one
+    thing in this pipeline that's always ground truth — before it's ever shown
+    as a clean success.
+    """
+    ids = _cited_complaint_ids(text)
+    if not ids:
+        return []
+    from data.ingest import get_index
+
+    real_ids = set(get_index().frame["complaint_id"].astype(str))
+    return sorted(cid for cid in ids if cid not in real_ids)
 
 
 # --------------------------------------------------------------------------- #
@@ -421,7 +466,16 @@ async def run_pipeline(
         "Write the brief.",
     )
     record(synthesis_agent.NAME, brief)
-    return Brief(question=question, answer=brief, mode="pipeline", trace=trace)
+    error = None
+    if fake_ids := _fabricated_citations(brief):
+        # Same guard as run_handoff — pipeline mode builds Synthesis a clean
+        # digest of real tool output, so this should be rarer here, but
+        # Synthesis is still a free-text model call and can still fabricate.
+        error = (
+            f"The brief cited complaint ID(s) not found in the indexed data "
+            f"(likely fabricated): {', '.join(fake_ids)}. Its claims are not verified."
+        )
+    return Brief(question=question, answer=brief, mode="pipeline", trace=trace, error=error)
 
 
 # --------------------------------------------------------------------------- #
@@ -469,7 +523,10 @@ async def answer(
 
     fallback = await run_pipeline(question, on_turn)
     fallback.mode = "pipeline (fallback)"
-    fallback.error = note
+    # Preserve both: why handoff was abandoned, and any new problem pipeline
+    # itself introduces (e.g. its own fabricated citation) — overwriting
+    # fallback.error with just `note` would silently discard the latter.
+    fallback.error = f"{note} | pipeline also: {fallback.error}" if fallback.error else note
     return fallback
 
 
