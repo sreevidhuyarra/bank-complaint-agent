@@ -50,6 +50,15 @@ Hard rules:
 - If the evidence is thin — a handful of complaints, a tiny share change — say so
   in one clause rather than dressing it up.
 - Keep it under 300 words.
+- If the question asks for something the indexed CFPB complaint data cannot
+  answer — real-time account transactions, backend fee-calculation logic,
+  auditing a specific account — say that plainly and specifically in Answer
+  (name what's missing, e.g. "this needs transaction-level account data, which
+  isn't in the indexed complaint dataset"). Never invent a technical audit to
+  sound complete. Still report any complaint evidence Retrieval did find that's
+  related to the question, even if it only partially addresses it — a brief
+  that's honest about its limits plus whatever real evidence exists beats one
+  that fabricates certainty or one that says nothing at all.
 """
 
 

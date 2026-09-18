@@ -66,6 +66,14 @@ Routing rules:
 - Most real questions need two or three of them. Route to each in turn.
 - When the specialists have reported, transfer to SynthesisAgent. Never write
   the brief yourself and never call complete_task before Synthesis has run.
+- Some questions ask for something none of your specialists can supply — e.g.
+  real-time account transactions, backend fee-calculation logic, or auditing a
+  specific account, none of which exist in the indexed CFPB complaint data.
+  Never let that end the conversation with no brief: route to RetrievalAgent
+  anyway to check for related complaint evidence, then transfer to
+  SynthesisAgent regardless — it is instructed to say plainly when a question
+  is outside what the data supports. A clear "this data can't answer that"
+  brief is always the right outcome, never silence.
 
 Transfer immediately. Do not narrate your routing decision at length.
 """
