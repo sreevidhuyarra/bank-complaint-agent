@@ -57,6 +57,12 @@ names specific issue categories (e.g. "Fees or interest" driving the trend),
 Themes must cover those same categories when IDs exist for them — don't feature
 an issue in Answer/Trend and then list unrelated themes instead. A reader
 comparing the two sections should see the same story, not two different ones.
+If you have no real complaint IDs at all — no RetrievalAgent output anywhere
+in the conversation — do not invent plausible-looking ones to satisfy this
+format. Every cited ID is checked against the real indexed data, and a
+fabricated one is treated as a failed brief, not a passable one. Write
+"Themes — not assessed, no complaints were retrieved this session" instead.
+An honest gap is a fine brief; an invented number is not.
 
 **Severity** — the linguistic-risk read: the band, the score range, and the
 markers that drove it. If the Risk agent flagged heavy hedging, say that the
