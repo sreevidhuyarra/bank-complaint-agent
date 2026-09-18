@@ -240,13 +240,20 @@ async def run_handoff(
             "No brief was produced — the handoff routing didn't reach the "
             "Synthesis agent. Try again, or use pipeline mode."
         )
-    elif fake_ids := _fabricated_citations(answer):
+    else:
         # Worse than a routing failure: this looks like a clean success. Never
-        # show a fabricated citation as trustworthy — see _fabricated_citations.
-        error = (
-            f"The brief cited complaint ID(s) not found in the indexed data "
-            f"(likely fabricated): {', '.join(fake_ids)}. Its claims are not verified."
-        )
+        # let a fabricated ID number reach the screen — see
+        # _redact_fabricated_citations. `error` still reflects the fabrication
+        # so `auto` mode's fallback logic treats this as a failure worth
+        # retrying via pipeline, even though the displayed text is now safe.
+        answer, fake_ids = _redact_fabricated_citations(answer)
+        if fake_ids:
+            error = (
+                f"The brief originally cited complaint ID(s) not found in the "
+                f"indexed data (likely fabricated): {', '.join(fake_ids)}. "
+                "Those citations have been redacted below — treat the affected "
+                "theme(s) as unconfirmed, not just missing a number."
+            )
     return Brief(question=question, answer=answer, mode="handoff", trace=trace, error=error)
 
 
@@ -301,25 +308,54 @@ def _cited_complaint_ids(text: str) -> set[str]:
     return ids
 
 
+def _real_complaint_ids() -> set[str]:
+    from data.ingest import get_index
+
+    return set(get_index().frame["complaint_id"].astype(str))
+
+
 def _fabricated_citations(text: str) -> list[str]:
     """Cited complaint IDs that don't actually exist in the indexed corpus.
 
     A model under pressure to satisfy "every theme needs an ID" can invent a
-    plausible-looking number instead of admitting it has none — confirmed live:
-    a brief cited three IDs (7890123-7890125) that don't exist anywhere in the
-    index, in the same response that correctly wrote "not assessed" for a
-    different section. Prompt instructions alone don't reliably prevent this,
-    so every brief's citations are checked against the real index — the one
-    thing in this pipeline that's always ground truth — before it's ever shown
-    as a clean success.
+    plausible-looking number instead of admitting it has none — confirmed live,
+    twice, with different fake IDs both times, including after Synthesis's own
+    prompt was tightened to explicitly forbid it — this is not something
+    prompt wording alone reliably prevents. Every brief's citations are
+    checked against the real index — the one thing in this pipeline that's
+    always ground truth — before it's ever shown as a clean success.
     """
     ids = _cited_complaint_ids(text)
     if not ids:
         return []
-    from data.ingest import get_index
-
-    real_ids = set(get_index().frame["complaint_id"].astype(str))
+    real_ids = _real_complaint_ids()
     return sorted(cid for cid in ids if cid not in real_ids)
+
+
+def _redact_fabricated_citations(text: str) -> tuple[str, list[str]]:
+    """Strip any cited complaint ID not found in the real index from `text`,
+    replacing it with an explicit marker instead of silently keeping a
+    plausible-looking fake number in front of the reader.
+
+    This is a display-safety net, not a groundedness check: it guarantees no
+    fabricated *ID number* ever reaches the screen, but it cannot verify that
+    the theme's surrounding description is itself accurate — that would need
+    checking the claim's substance against the retrieved narratives, a harder
+    problem this doesn't attempt. Treat a redacted theme as unconfirmed
+    overall, not just missing one number.
+    """
+    fake_ids = set(_fabricated_citations(text))
+    if not fake_ids:
+        return text, []
+
+    def _replace(match: re.Match) -> str:
+        tokens = [t.strip() for t in match.group(1).split(",")]
+        kept = [t for t in tokens if t not in fake_ids]
+        if len(kept) == len(tokens):
+            return match.group(0)  # nothing fake in this group — leave as-is
+        return "[" + ", ".join(kept) + ", unverified]" if kept else "[unverified — no confirmed complaint ID]"
+
+    return _CITATION_GROUP_RE.sub(_replace, text), sorted(fake_ids)
 
 
 # --------------------------------------------------------------------------- #
@@ -473,15 +509,16 @@ async def run_pipeline(
         "Write the brief.",
     )
     record(synthesis_agent.NAME, brief)
-    error = None
-    if fake_ids := _fabricated_citations(brief):
-        # Same guard as run_handoff — pipeline mode builds Synthesis a clean
-        # digest of real tool output, so this should be rarer here, but
-        # Synthesis is still a free-text model call and can still fabricate.
-        error = (
-            f"The brief cited complaint ID(s) not found in the indexed data "
-            f"(likely fabricated): {', '.join(fake_ids)}. Its claims are not verified."
-        )
+    # Same guard as run_handoff — pipeline mode builds Synthesis a clean digest
+    # of real tool output, so this should be rarer here, but Synthesis is
+    # still a free-text model call and can still fabricate.
+    brief, fake_ids = _redact_fabricated_citations(brief)
+    error = (
+        f"The brief originally cited complaint ID(s) not found in the indexed "
+        f"data (likely fabricated): {', '.join(fake_ids)}. Those citations "
+        "have been redacted below — treat the affected theme(s) as "
+        "unconfirmed, not just missing a number."
+    ) if fake_ids else None
     return Brief(question=question, answer=brief, mode="pipeline", trace=trace, error=error)
 
 
