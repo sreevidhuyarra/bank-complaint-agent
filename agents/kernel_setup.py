@@ -268,7 +268,12 @@ def _build_azure_responses_agent(
         instructions=instructions,
         plugins=plugins,
         function_choice_behavior=function_choice_behavior,
-        temperature=config.temperature,
+        # No `temperature=` — confirmed live: this deployment rejects it
+        # outright ("Unsupported parameter: 'temperature' is not supported
+        # with this model"), the same pattern as `max_tokens` and `none`-valued
+        # `reasoning_effort` before it. Reasoning-family models standardly
+        # don't accept a custom temperature at all; `config.temperature` still
+        # exists for the other three providers, just unused on this path.
         # Confirmed live: Azure's own error on the Chat Completions path named
         # the accepted values for this deployment — "low", "medium", "high",
         # "xhigh" — and named the Responses API (this one) as the surface that
