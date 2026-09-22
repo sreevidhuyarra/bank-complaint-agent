@@ -1,6 +1,6 @@
 """Semantic Kernel wiring — one shared chat service for the whole agent team.
 
-Two providers are supported, selected by `config.LLM_PROVIDER`:
+Three providers are supported, selected by `config.LLM_PROVIDER`:
 
 `groq`    (default) Every agent reasons through Groq's free endpoint. Groq
           exposes an OpenAI-compatible API, so SK's OpenAI connector drives it
@@ -12,6 +12,15 @@ Two providers are supported, selected by `config.LLM_PROVIDER`:
           `GoogleAIChatCompletion` connector (no OpenAI-shim trick needed —
           Anthropic and Google both ship first-party SK connectors, since
           their wire formats aren't OpenAI-compatible the way Groq's is).
+
+`azure`   Azure OpenAI — your own deployment, through SK's native
+          `AzureChatCompletion` connector. The simplest of the three to wire
+          up: Azure OpenAI's wire format *is* OpenAI's, so this needs no
+          shim (unlike Groq) and no new dependency (unlike Google) — the
+          `openai` package this project already depends on ships
+          `AsyncAzureOpenAI`, and Azure's errors are the same
+          `openai.RateLimitError` / `openai.APIError` types the retry logic
+          below already handles for Groq.
 
 Switching providers is entirely contained to this file: every agent, tool, and
 the orchestrator's handoff graph are unchanged either way.
@@ -37,10 +46,14 @@ from semantic_kernel.connectors.ai.prompt_execution_settings import PromptExecut
 from semantic_kernel.functions import KernelArguments
 
 from config import (
+    AZURE_API_VERSION,
+    AZURE_DEPLOYMENT,
+    AZURE_ENDPOINT,
     GOOGLE_MODEL,
     GROQ_BASE_URL,
     GROQ_MODEL,
     LLM_PROVIDER,
+    azure_api_key,
     google_api_key,
     groq_api_key,
 )
@@ -74,7 +87,7 @@ class LlmConfig:
 
     def __post_init__(self) -> None:
         if self.model is None:
-            self.model = GOOGLE_MODEL if self.provider == "google" else GROQ_MODEL
+            self.model = {"google": GOOGLE_MODEL, "azure": AZURE_DEPLOYMENT}.get(self.provider, GROQ_MODEL)
 
 
 def build_chat_service(config: LlmConfig | None = None) -> ChatCompletionClientBase:
@@ -82,6 +95,8 @@ def build_chat_service(config: LlmConfig | None = None) -> ChatCompletionClientB
     config = config or LlmConfig()
     if config.provider == "google":
         return _build_google_chat_service(config)
+    if config.provider == "azure":
+        return _build_azure_chat_service(config)
     return _build_groq_chat_service(config)
 
 
@@ -125,6 +140,32 @@ def _build_google_chat_service(config: LlmConfig) -> "PatchedGoogleAIChatComplet
     return PatchedGoogleAIChatCompletion(
         service_id=SERVICE_ID,
         gemini_model_id=config.model,
+        api_key=api_key,
+    )
+
+
+def _build_azure_chat_service(config: LlmConfig) -> "AzureChatCompletion":
+    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
+
+    api_key = azure_api_key()
+    if not api_key:
+        raise MissingApiKey(
+            "AZURE_OPENAI_API_KEY is not set. Set it in your environment (or as a "
+            "Space secret) before running the agents — never put it in config.py."
+        )
+    if not AZURE_ENDPOINT or AZURE_ENDPOINT == "<your-endpoint>":
+        raise MissingApiKey(
+            "AZURE_ENDPOINT in config.py is still the placeholder. Paste your "
+            "Azure OpenAI resource's endpoint there (e.g. "
+            "https://<resource-name>.openai.azure.com/) — the endpoint isn't a "
+            "secret, so it lives in code rather than an env var."
+        )
+
+    return AzureChatCompletion(
+        service_id=SERVICE_ID,
+        deployment_name=config.model,  # your own deployment alias, e.g. "gpt-6-astra"
+        endpoint=AZURE_ENDPOINT,
+        api_version=AZURE_API_VERSION,
         api_key=api_key,
     )
 
@@ -174,6 +215,14 @@ def execution_settings(config: LlmConfig | None = None,
             temperature=config.temperature,
             max_output_tokens=config.max_tokens,  # Google's field name differs from OpenAI's
         )
+    elif config.provider == "azure":
+        from semantic_kernel.connectors.ai.open_ai import AzureChatPromptExecutionSettings
+
+        settings = AzureChatPromptExecutionSettings(
+            service_id=SERVICE_ID,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,  # inherited from OpenAIChatPromptExecutionSettings
+        )
     else:
         settings = OpenAIChatPromptExecutionSettings(
             service_id=SERVICE_ID,
@@ -205,7 +254,8 @@ def default_arguments(config: LlmConfig | None = None, tool_choice: str = "auto"
 def llm_available(provider: str | None = None) -> bool:
     """Whether the agent team can run at all. The UI uses this to degrade gracefully."""
     provider = provider or LLM_PROVIDER
-    return google_api_key() is not None if provider == "google" else groq_api_key() is not None
+    key_check = {"google": google_api_key, "azure": azure_api_key}.get(provider, groq_api_key)
+    return key_check() is not None
 
 
 # --------------------------------------------------------------------------- #

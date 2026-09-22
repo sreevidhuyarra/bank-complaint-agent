@@ -217,15 +217,17 @@ now: every specialist is explicitly told to close out to Synthesis, and
 Synthesis can hand back to the Orchestrator when it's reached with nothing to
 work with.
 
-### Switching providers — Groq vs. Google AI Studio
+### Switching providers — Groq, Google AI Studio, or Azure OpenAI
 
 `config.LLM_PROVIDER` (env var, default `groq`) selects which LLM backs every
-agent. Setting it to `google` switches the whole team to Gemini via Google AI
-Studio, through Semantic Kernel's own native `GoogleAIChatCompletion`
-connector — no OpenAI-shim trick needed there, since Google (like Anthropic)
-ships a first-party SK connector rather than mimicking OpenAI's wire format.
-The switch touches nothing outside [agents/kernel_setup.py](agents/kernel_setup.py):
-every agent, tool, and the handoff graph are provider-agnostic.
+agent — `groq`, `google`, or `azure`. The switch touches nothing outside
+[agents/kernel_setup.py](agents/kernel_setup.py): every agent, tool, and the
+handoff graph are provider-agnostic.
+
+`google` switches the whole team to Gemini via Google AI Studio, through
+Semantic Kernel's own native `GoogleAIChatCompletion` connector — no
+OpenAI-shim trick needed there, since Google (like Anthropic) ships a
+first-party SK connector rather than mimicking OpenAI's wire format.
 
 ```bash
 pip install "google-genai>=1.51,<1.75"   # not needed for the default Groq path
@@ -262,6 +264,29 @@ Google key and a genuinely completed run to observe:
   against an actual captured error, unlike Groq's regex, which is tuned
   against real ones. Check your account's actual limits at
   `aistudio.google.com/rate-limit` rather than assuming Groq's shape carries over.
+
+`azure` points the whole team at your own Azure OpenAI deployment, through
+SK's native `AzureChatCompletion` connector. This is the simplest of the three
+providers to wire up: Azure OpenAI's wire format *is* OpenAI's, so it needs no
+compatibility shim (unlike Groq) and no new dependency (unlike Google) — the
+`openai` package this project already depends on ships `AsyncAzureOpenAI`, and
+Azure's errors are the same `openai.RateLimitError` / `openai.APIError` types
+the retry logic already handles.
+
+```bash
+export LLM_PROVIDER=azure
+export AZURE_OPENAI_API_KEY=...      # never put this in config.py
+export AZURE_DEPLOYMENT=your-deployment-name  # optional, defaults to what's in config.py
+python app.py
+```
+
+The endpoint is the one piece of Azure configuration that lives in
+[config.py](config.py) (`AZURE_ENDPOINT`) rather than an env var — deliberately:
+it's project-specific configuration visible in your own Azure portal, not a
+secret, unlike the API key. `AZURE_DEPLOYMENT` is your own deployment's alias
+(e.g. `gpt-6-astra`) — a name you chose in Azure AI Foundry, not a public
+model name, so there's no "is this still current" check to run the way there
+is for `GROQ_MODEL`/`GOOGLE_MODEL`.
 
 ## Running it
 

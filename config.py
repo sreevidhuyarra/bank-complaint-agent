@@ -72,9 +72,9 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 # Which provider agents/kernel_setup.py wires up: "groq" (default, free, less
-# reliable tool-calling) or "google" (Gemini via Google AI Studio). Switching
-# providers doesn't touch any agent/tool/orchestration code — see
-# agents/kernel_setup.py's provider branch.
+# reliable tool-calling), "google" (Gemini via Google AI Studio), or "azure"
+# (Azure OpenAI, your own deployment). Switching providers doesn't touch any
+# agent/tool/orchestration code — see agents/kernel_setup.py's provider branch.
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq").lower()
 
 # gemini-2.5-flash-lite was the first default here and was retired for new
@@ -89,6 +89,19 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "groq").lower()
 # project once).
 GOOGLE_MODEL = os.environ.get("GOOGLE_MODEL", "gemini-3.5-flash-lite")
 
+# --- Azure OpenAI --------------------------------------------------------
+# Deployment name is a user-chosen alias assigned in Azure AI Foundry/Azure
+# OpenAI Studio, not a public model name — treated as opaque configuration
+# here, never second-guessed against a "real" model list the way GROQ_MODEL
+# and GOOGLE_MODEL are, since there's no public registry to check it against.
+#
+# The endpoint is filled in directly below (not read from an env var) — it's
+# project-specific configuration visible in your own Azure portal, not a
+# secret the way the API key is. Paste your own endpoint over the placeholder.
+AZURE_ENDPOINT = "<your-endpoint>"
+AZURE_DEPLOYMENT = os.environ.get("AZURE_DEPLOYMENT", "gpt-6-astra")
+AZURE_API_VERSION = os.environ.get("AZURE_API_VERSION", "2024-12-01-preview")
+
 
 def groq_api_key() -> str | None:
     return os.environ.get("GROQ_API_KEY") or None
@@ -96,6 +109,13 @@ def groq_api_key() -> str | None:
 
 def google_api_key() -> str | None:
     return os.environ.get("GOOGLE_AI_API_KEY") or None
+
+
+def azure_api_key() -> str | None:
+    # AZURE_OPENAI_API_KEY matches the env var name Azure's own SDK looks for
+    # by convention (see semantic_kernel's AzureOpenAISettings), so this also
+    # happens to be discoverable/standard, not just this project's own choice.
+    return os.environ.get("AZURE_OPENAI_API_KEY") or None
 
 
 for _d in (CACHE_DIR, INDEX_DIR):
