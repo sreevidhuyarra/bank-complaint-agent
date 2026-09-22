@@ -230,6 +230,18 @@ def execution_settings(config: LlmConfig | None = None,
             service_id=SERVICE_ID,
             temperature=config.temperature,
             max_completion_tokens=config.max_tokens,
+            # Also confirmed live: this deployment rejects function/tool
+            # calling combined with any non-"none" reasoning_effort on the
+            # chat completions endpoint ("Function tools with reasoning_effort
+            # are not supported for gpt-6-astra... set reasoning_effort to
+            # 'none'" — Azure's own error names the fix). The dedicated
+            # `reasoning_effort` field only accepts "low"/"medium"/"high" in
+            # SK's type, not the literal string "none" the API itself wants
+            # here, so this goes through `extra_body` instead — a real,
+            # documented passthrough on the underlying openai SDK's
+            # `create()` call for exactly this kind of unmodeled parameter,
+            # not a workaround specific to this project.
+            extra_body={"reasoning_effort": "none"},
         )
     else:
         settings = OpenAIChatPromptExecutionSettings(
