@@ -218,10 +218,18 @@ def execution_settings(config: LlmConfig | None = None,
     elif config.provider == "azure":
         from semantic_kernel.connectors.ai.open_ai import AzureChatPromptExecutionSettings
 
+        # Confirmed live against this deployment: the legacy `max_tokens` is
+        # rejected outright — "Unsupported parameter: 'max_tokens' is not
+        # supported with this model. Use 'max_completion_tokens' instead."
+        # This is standard behavior for OpenAI/Azure's newer reasoning-family
+        # models (o1/o3-style and later), which this deployment evidently is.
+        # `max_completion_tokens` is a separate field on the same settings
+        # class (inherited from OpenAIChatPromptExecutionSettings) — leaving
+        # `max_tokens` unset means it's correctly omitted from the request.
         settings = AzureChatPromptExecutionSettings(
             service_id=SERVICE_ID,
             temperature=config.temperature,
-            max_tokens=config.max_tokens,  # inherited from OpenAIChatPromptExecutionSettings
+            max_completion_tokens=config.max_tokens,
         )
     else:
         settings = OpenAIChatPromptExecutionSettings(
