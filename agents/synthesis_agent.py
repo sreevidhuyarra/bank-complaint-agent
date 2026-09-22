@@ -7,9 +7,10 @@ traceable to a complaint ID.
 
 from __future__ import annotations
 
-from semantic_kernel.agents import ChatCompletionAgent
+from semantic_kernel.agents import Agent
 
-from agents.kernel_setup import LlmConfig, build_kernel, default_arguments
+from agents.kernel_setup import LlmConfig
+from agents.kernel_setup import build_agent as build_llm_agent
 
 NAME = "SynthesisAgent"
 
@@ -112,16 +113,16 @@ Hard rules:
 _CONFIG = LlmConfig(max_tokens=1600)
 
 
-def build_agent() -> ChatCompletionAgent:
-    return ChatCompletionAgent(
-        kernel=build_kernel(config=_CONFIG),
+def build_agent() -> Agent:
+    return build_llm_agent(
+        name=NAME,
+        description="Compiles specialist findings into a short, cited analyst brief.",
+        instructions=INSTRUCTIONS,
+        config=_CONFIG,
         # Deliberately left at the "auto" default, unlike every other agent in
         # this project — Synthesis's whole job is answering in prose. It has
         # one optional escape-hatch transfer for when it's reached with
         # nothing to work with, but forcing a tool call every turn would
         # prevent it from ever writing the actual brief.
-        arguments=default_arguments(_CONFIG),
-        name=NAME,
-        description="Compiles specialist findings into a short, cited analyst brief.",
-        instructions=INSTRUCTIONS,
+        tool_choice="auto",
     )

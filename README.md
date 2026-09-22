@@ -220,9 +220,11 @@ work with.
 ### Switching providers — Groq, Google AI Studio, or Azure OpenAI
 
 `config.LLM_PROVIDER` (env var, default `groq`) selects which LLM backs every
-agent — `groq`, `google`, or `azure`. The switch touches nothing outside
-[agents/kernel_setup.py](agents/kernel_setup.py): every agent, tool, and the
-handoff graph are provider-agnostic.
+agent — `groq`, `google`, `azure`, or `azure_responses`. Every agent file
+calls [agents/kernel_setup.py](agents/kernel_setup.py)'s `build_agent()`
+factory rather than constructing an `Agent` directly, so the switch — even for
+`azure_responses`, which needs a genuinely different `Agent` class — stays
+contained to that one file.
 
 `google` switches the whole team to Gemini via Google AI Studio, through
 Semantic Kernel's own native `GoogleAIChatCompletion` connector — no
@@ -266,12 +268,13 @@ Google key and a genuinely completed run to observe:
   `aistudio.google.com/rate-limit` rather than assuming Groq's shape carries over.
 
 `azure` points the whole team at your own Azure OpenAI deployment, through
-SK's native `AzureChatCompletion` connector. This is the simplest of the three
-providers to wire up: Azure OpenAI's wire format *is* OpenAI's, so it needs no
-compatibility shim (unlike Groq) and no new dependency (unlike Google) — the
-`openai` package this project already depends on ships `AsyncAzureOpenAI`, and
-Azure's errors are the same `openai.RateLimitError` / `openai.APIError` types
-the retry logic already handles.
+SK's native `AzureChatCompletion` connector. Azure OpenAI's wire format *is*
+OpenAI's, so it needs no compatibility shim (unlike Groq) and no new
+dependency (unlike Google) — the `openai` package this project already
+depends on ships `AsyncAzureOpenAI`, and Azure's errors are the same
+`openai.RateLimitError` / `openai.APIError` types the retry logic already
+handles. Reasoning-family deployments need `azure_responses` instead — see
+below.
 
 ```bash
 export LLM_PROVIDER=azure
@@ -283,10 +286,54 @@ python app.py
 The endpoint is the one piece of Azure configuration that lives in
 [config.py](config.py) (`AZURE_ENDPOINT`) rather than an env var — deliberately:
 it's project-specific configuration visible in your own Azure portal, not a
-secret, unlike the API key. `AZURE_DEPLOYMENT` is your own deployment's alias
-(e.g. `gpt-6-astra`) — a name you chose in Azure AI Foundry, not a public
-model name, so there's no "is this still current" check to run the way there
-is for `GROQ_MODEL`/`GOOGLE_MODEL`.
+secret, unlike the API key. It must be the *base* resource URL only (e.g.
+`https://<resource-name>.openai.azure.com/`) — never a full request URL with a
+path or `?api-version=...`; the SDK builds the correct path itself per
+endpoint type. `AZURE_DEPLOYMENT` is your own deployment's alias (e.g.
+`gpt-6-astra`) — a name you chose in Azure AI Foundry, not a public model
+name, so there's no "is this still current" check to run the way there is for
+`GROQ_MODEL`/`GOOGLE_MODEL`.
+
+#### `azure_responses` — when your deployment needs the Responses API instead
+
+Some Azure deployments — confirmed live against a real reasoning-family
+model — reject tool/function calling on the Chat Completions endpoint
+entirely: `"Function tools with reasoning_effort are not supported for
+<deployment> in /v1/chat/completions... To use function tools, use
+/v1/responses."` Setting `reasoning_effort` to `"none"` as that error
+suggests doesn't help either — a *second* live error showed this specific
+model doesn't accept `"none"` at all, only `"low"/"medium"/"high"/"xhigh"`.
+The two errors together mean there's no working parameter combination on Chat
+Completions; the model genuinely requires the different API surface.
+
+`azure_responses` is that different surface — a fourth provider value using
+SK's `AzureResponsesAgent`, a genuinely different *Agent* class (not just a
+different service) since the Responses API isn't wire-compatible with Chat
+Completions. This is the one provider that needed [agents/kernel_setup.py](agents/kernel_setup.py)'s
+`build_agent()` factory instead of a swap inside the existing
+`ChatCompletionAgent` path — every agent file in the project calls that
+factory now, so this difference stays contained to one function rather than
+touching all five agent files' construction logic directly.
+
+```bash
+export LLM_PROVIDER=azure_responses
+export AZURE_OPENAI_API_KEY=...
+export AZURE_DEPLOYMENT=your-reasoning-deployment-name
+python app.py
+```
+
+Two things worth knowing about this path specifically:
+
+- **No per-agent token limit.** `max_output_tokens` is a per-invocation
+  parameter on this SK agent class, not a constructor default, and
+  `HandoffOrchestration` drives every invocation internally with no hook to
+  pass one through. Each agent uses the model's own default output length
+  instead — not a real loss, since an artificial cap is exactly what caused
+  the "truncated mid-thought" problem with Gemini's hidden reasoning tokens
+  elsewhere in this project.
+- **Reasoning effort is hardcoded to `"low"`** in `kernel_setup.py`, chosen for
+  speed on what these agents actually do (routing decisions, short reports).
+  Raise it if a deployment's answers come back shallow.
 
 ## Running it
 

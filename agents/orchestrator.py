@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Callable
 
-from semantic_kernel.agents import ChatCompletionAgent
+from semantic_kernel.agents import Agent
 from semantic_kernel.agents.orchestration.handoffs import (
     HandoffOrchestration,
     OrchestrationHandoffs,
@@ -36,8 +36,7 @@ from agents.retrieval_agent import format_hits
 from agents.kernel_setup import (
     MissingApiKey,
     QuotaExhausted,
-    build_kernel,
-    default_arguments,
+    build_agent,
     is_transient_error,
     llm_available,
     with_rate_limit_retry,
@@ -110,19 +109,18 @@ class Brief:
 # Team construction
 # --------------------------------------------------------------------------- #
 
-def build_orchestrator_agent() -> ChatCompletionAgent:
-    return ChatCompletionAgent(
-        kernel=build_kernel(),
-        # "required": the Orchestrator's only job is routing — it must never
-        # just answer in prose instead of calling a transfer_to_* function.
-        arguments=default_arguments(tool_choice="required"),
+def build_orchestrator_agent() -> Agent:
+    return build_agent(
         name=NAME,
         description="Routes analyst questions to the right specialist agents.",
         instructions=INSTRUCTIONS,
+        # "required": the Orchestrator's only job is routing — it must never
+        # just answer in prose instead of calling a transfer_to_* function.
+        tool_choice="required",
     )
 
 
-def build_team() -> dict[str, ChatCompletionAgent]:
+def build_team() -> dict[str, Agent]:
     """The five agents. Order matters: the first member receives the question."""
     return {
         NAME: build_orchestrator_agent(),
@@ -362,7 +360,7 @@ def _redact_fabricated_citations(text: str) -> tuple[str, list[str]]:
 # Deterministic pipeline
 # --------------------------------------------------------------------------- #
 
-async def _ask(agent: ChatCompletionAgent, prompt: str) -> str:
+async def _ask(agent: Agent, prompt: str) -> str:
     # Each pipeline call is independent, so a rate-limit 429 here is retried in
     # place rather than restarting the whole run — unlike a mid-handoff 429,
     # nothing upstream needs to be redone.

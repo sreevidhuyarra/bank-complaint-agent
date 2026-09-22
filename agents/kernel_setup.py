@@ -1,6 +1,6 @@
 """Semantic Kernel wiring — one shared chat service for the whole agent team.
 
-Three providers are supported, selected by `config.LLM_PROVIDER`:
+Four providers are supported, selected by `config.LLM_PROVIDER`:
 
 `groq`    (default) Every agent reasons through Groq's free endpoint. Groq
           exposes an OpenAI-compatible API, so SK's OpenAI connector drives it
@@ -13,14 +13,21 @@ Three providers are supported, selected by `config.LLM_PROVIDER`:
           Anthropic and Google both ship first-party SK connectors, since
           their wire formats aren't OpenAI-compatible the way Groq's is).
 
-`azure`   Azure OpenAI — your own deployment, through SK's native
-          `AzureChatCompletion` connector. The simplest of the three to wire
-          up: Azure OpenAI's wire format *is* OpenAI's, so this needs no
-          shim (unlike Groq) and no new dependency (unlike Google) — the
-          `openai` package this project already depends on ships
-          `AsyncAzureOpenAI`, and Azure's errors are the same
-          `openai.RateLimitError` / `openai.APIError` types the retry logic
-          below already handles for Groq.
+`azure`   Azure OpenAI Chat Completions — your own deployment, through SK's
+          native `AzureChatCompletion` connector. Needs no shim (unlike Groq)
+          and no new dependency (unlike Google) — the `openai` package this
+          project already depends on ships `AsyncAzureOpenAI`.
+
+`azure_responses`
+          Azure OpenAI *Responses* API — a different API surface, needed for
+          reasoning-family deployments whose tool calling Azure's Chat
+          Completions endpoint rejects outright (confirmed live: "Function
+          tools with reasoning_effort are not supported... in
+          /v1/chat/completions"). This is the one provider that needs a
+          genuinely different SK *Agent* class (`AzureResponsesAgent`, not
+          `ChatCompletionAgent`+a service) — see `build_agent()` below, which
+          every agent file calls instead of constructing `ChatCompletionAgent`
+          directly, so this difference stays contained to one function.
 
 Switching providers is entirely contained to this file: every agent, tool, and
 the orchestrator's handoff graph are unchanged either way.
@@ -49,6 +56,7 @@ from config import (
     AZURE_API_VERSION,
     AZURE_DEPLOYMENT,
     AZURE_ENDPOINT,
+    AZURE_RESPONSES_API_VERSION,
     GOOGLE_MODEL,
     GROQ_BASE_URL,
     GROQ_MODEL,
@@ -87,7 +95,11 @@ class LlmConfig:
 
     def __post_init__(self) -> None:
         if self.model is None:
-            self.model = {"google": GOOGLE_MODEL, "azure": AZURE_DEPLOYMENT}.get(self.provider, GROQ_MODEL)
+            self.model = {
+                "google": GOOGLE_MODEL,
+                "azure": AZURE_DEPLOYMENT,
+                "azure_responses": AZURE_DEPLOYMENT,
+            }.get(self.provider, GROQ_MODEL)
 
 
 def build_chat_service(config: LlmConfig | None = None) -> ChatCompletionClientBase:
@@ -144,9 +156,10 @@ def _build_google_chat_service(config: LlmConfig) -> "PatchedGoogleAIChatComplet
     )
 
 
-def _build_azure_chat_service(config: LlmConfig) -> "AzureChatCompletion":
-    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
-
+def _require_azure_credentials() -> str:
+    """Shared by both Azure providers: the API key + endpoint checks are
+    identical regardless of which API surface (Chat Completions vs.
+    Responses) ends up being used. Returns the validated API key."""
     api_key = azure_api_key()
     if not api_key:
         raise MissingApiKey(
@@ -156,11 +169,18 @@ def _build_azure_chat_service(config: LlmConfig) -> "AzureChatCompletion":
     if not AZURE_ENDPOINT or AZURE_ENDPOINT == "<your-endpoint>":
         raise MissingApiKey(
             "AZURE_ENDPOINT in config.py is still the placeholder. Paste your "
-            "Azure OpenAI resource's endpoint there (e.g. "
-            "https://<resource-name>.openai.azure.com/) — the endpoint isn't a "
+            "Azure OpenAI resource's *base* URL there (e.g. "
+            "https://<resource-name>.openai.azure.com/ — no /openai/... path, no "
+            "?api-version=..., just the resource root) — the endpoint isn't a "
             "secret, so it lives in code rather than an env var."
         )
+    return api_key
 
+
+def _build_azure_chat_service(config: LlmConfig) -> "AzureChatCompletion":
+    from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
+
+    api_key = _require_azure_credentials()
     return AzureChatCompletion(
         service_id=SERVICE_ID,
         deployment_name=config.model,  # your own deployment alias, e.g. "gpt-6-astra"
@@ -178,6 +198,91 @@ def build_kernel(plugins: dict[str, object] | None = None,
     for name, plugin in (plugins or {}).items():
         kernel.add_plugin(plugin, plugin_name=name)
     return kernel
+
+
+def build_agent(
+    *,
+    name: str,
+    description: str,
+    instructions: str,
+    plugins: list[object] | None = None,
+    tool_choice: str = "auto",
+    config: LlmConfig | None = None,
+):
+    """Build one agent for whichever provider is configured.
+
+    Every agent-building function in this project (orchestrator.py and each
+    specialist) calls this instead of constructing `ChatCompletionAgent`
+    directly, so `azure_responses` — the one provider that needs a genuinely
+    different SK `Agent` class, not just a different service — stays
+    contained to this single function rather than touching every agent file.
+    """
+    config = config or LlmConfig()
+    if config.provider == "azure_responses":
+        return _build_azure_responses_agent(
+            name=name, description=description, instructions=instructions,
+            plugins=plugins, tool_choice=tool_choice, config=config,
+        )
+
+    from semantic_kernel.agents import ChatCompletionAgent
+
+    return ChatCompletionAgent(
+        kernel=build_kernel(config=config),
+        arguments=default_arguments(config, tool_choice),
+        name=name,
+        description=description,
+        instructions=instructions,
+        plugins=plugins,
+    )
+
+
+def _build_azure_responses_agent(
+    *,
+    name: str,
+    description: str,
+    instructions: str,
+    plugins: list[object] | None,
+    tool_choice: str,
+    config: LlmConfig,
+) -> "AzureResponsesAgent":
+    from semantic_kernel.agents import AzureResponsesAgent
+
+    api_key = _require_azure_credentials()
+    client = AzureResponsesAgent.create_client(
+        api_key=api_key,
+        endpoint=AZURE_ENDPOINT,
+        api_version=AZURE_RESPONSES_API_VERSION,
+        deployment_name=config.model,
+    )
+
+    function_choice_behavior = {
+        "required": FunctionChoiceBehavior.Required(maximum_auto_invoke_attempts=10),
+        "auto": FunctionChoiceBehavior.Auto(maximum_auto_invoke_attempts=10),
+    }.get(tool_choice)  # "none" (or anything else) -> None, no tools exposed
+
+    return AzureResponsesAgent(
+        ai_model_id=config.model,
+        client=client,
+        name=name,
+        description=description,
+        instructions=instructions,
+        plugins=plugins,
+        function_choice_behavior=function_choice_behavior,
+        temperature=config.temperature,
+        # Confirmed live: Azure's own error on the Chat Completions path named
+        # the accepted values for this deployment — "low", "medium", "high",
+        # "xhigh" — and named the Responses API (this one) as the surface that
+        # actually supports tool calling for it. "low" keeps turns fast for
+        # what these agents need (routing decisions, short reports); raise it
+        # if answers come back shallow.
+        reasoning={"effort": "low"},
+        # No token-limit field exists at construction time on this agent class
+        # — `max_output_tokens` is a per-invoke parameter only, and
+        # HandoffOrchestration drives every invocation internally with no hook
+        # to pass one through. Accepting the model's own default length isn't
+        # a real loss here: a hard cap is exactly what caused the "truncated
+        # mid-thought" problem with Gemini's hidden reasoning tokens earlier.
+    )
 
 
 def execution_settings(config: LlmConfig | None = None,
@@ -274,7 +379,11 @@ def default_arguments(config: LlmConfig | None = None, tool_choice: str = "auto"
 def llm_available(provider: str | None = None) -> bool:
     """Whether the agent team can run at all. The UI uses this to degrade gracefully."""
     provider = provider or LLM_PROVIDER
-    key_check = {"google": google_api_key, "azure": azure_api_key}.get(provider, groq_api_key)
+    key_check = {
+        "google": google_api_key,
+        "azure": azure_api_key,
+        "azure_responses": azure_api_key,
+    }.get(provider, groq_api_key)
     return key_check() is not None
 
 

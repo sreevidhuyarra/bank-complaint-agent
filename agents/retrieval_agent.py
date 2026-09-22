@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from semantic_kernel.agents import ChatCompletionAgent
+from semantic_kernel.agents import Agent
 from semantic_kernel.functions import kernel_function
 
-from agents.kernel_setup import build_kernel, default_arguments
+from agents.kernel_setup import build_agent as build_llm_agent
 from data.ingest import ComplaintHit, get_index
 from nlp.linguistic_risk import ordinal
 
@@ -115,17 +115,13 @@ Rules:
 """
 
 
-def build_agent() -> ChatCompletionAgent:
-    tools = RetrievalTools()
-    return ChatCompletionAgent(
-        # The agent registers `plugins` on its kernel itself — adding them to the
-        # kernel here as well would expose every tool to the model twice.
-        kernel=build_kernel(),
-        # "required": must always either search or transfer — never just
-        # answer in prose and silently end the conversation.
-        arguments=default_arguments(tool_choice="required"),
+def build_agent() -> Agent:
+    return build_llm_agent(
         name=NAME,
         description="Finds relevant CFPB complaint narratives by semantic search.",
         instructions=INSTRUCTIONS,
-        plugins=[tools],
+        plugins=[RetrievalTools()],
+        # "required": must always either search or transfer — never just
+        # answer in prose and silently end the conversation.
+        tool_choice="required",
     )
