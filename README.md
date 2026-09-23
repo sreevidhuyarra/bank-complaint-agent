@@ -203,7 +203,7 @@ python -m data.fetch_cfpb      # pulls ~10k complaints from the CFPB API (no key
 python -m data.ingest          # cleans, fits the corpus LM, scores, embeds, builds FAISS
 
 export GOOGLE_AI_API_KEY=...   # free key: https://aistudio.google.com
-python app.py                  # http://localhost:7860
+python app.py                  # http://127.0.0.1:7860/
 ```
 
 The **Explore** and **Dashboard** tabs work with no API key at all — semantic
@@ -226,58 +226,19 @@ minimum narrative length.
 
 ## Tech stack
 
-| Layer | Choice | Cost |
-| --- | --- | --- |
-| Data | CFPB Complaint Database API | $0 · no key |
-| Embeddings | `all-MiniLM-L6-v2`, local | $0 |
-| Vector index | FAISS `IndexFlatIP` (cosine, exact) | $0 |
-| Orchestration | Semantic Kernel (Python) | $0 |
-| LLM | Google AI Studio · Gemini | $0 free tier |
-| App | Gradio | $0 |
-| Hosting | Render, free Python web service | $0 |
+| Layer | Choice |
+| --- | --- |
+| Data | CFPB Complaint Database API |
+| Embeddings | `all-MiniLM-L6-v2`, local |
+| Vector index | FAISS `IndexFlatIP` (cosine, exact) |
+| Orchestration | Semantic Kernel (Python) |
+| LLM | Google AI Studio · Gemini Flash (`gemini-3.5-flash-lite`) |
+| App | Gradio |
 
 Free tiers were a deliberate constraint, not a limitation — they force the
 design decisions that make the system defensible: local deterministic scoring
 instead of LLM-judged severity, exact search instead of an approximate index
 that needs tuning, and a fallback path for when the inference tier rate-limits.
-
----
-
-## Deploying
-
-**Hugging Face Spaces now requires a paid (Pro) plan to create a Gradio or
-Docker Space** — only Static Spaces are free (verified against HF's own docs;
-this changed at some point after this project's spec was written, when Spaces
-were free on CPU Basic hardware regardless of SDK). The one free-tier
-exception, ZeroGPU, doesn't fit here: it requires an account older than 30
-days and exists for GPU-bound demos, not this app's CPU-only workload. If you
-have HF Pro already, the original steps still work:
-
-1. **New Space → Gradio SDK → CPU Basic**.
-2. Push this repo to the Space, or connect the GitHub repo directly.
-3. Add `GOOGLE_AI_API_KEY` under **Settings → Variables and secrets**. Never commit it.
-4. The built index in `index/` is committed (~33 MB), so the Space boots without
-   re-fetching CFPB data. `index/embeddings.npy` is *not* committed — those
-   vectors already live inside `complaints.faiss` and are reconstructed at load
-   time. To keep the repo lean instead, uncomment `index/` in `.gitignore` and
-   run the two build commands on first boot — expect a slow cold start.
-5. Free Spaces sleep when idle. Open the link a minute before demoing.
-
-### Deploying for free instead — Render
-
-[Render](https://render.com)'s free tier hosts a native Python web service (no
-Docker required), with no card needed to get started:
-
-1. Push this repo to GitHub (see below), then at [render.com](https://render.com):
-   **New → Web Service → connect the GitHub repo**.
-2. **Build command:** `pip install -r requirements.txt`
-   **Start command:** `python app.py`
-   (`app.py` already reads Render's `PORT` env var — see [app/app.py](app/app.py).)
-3. Add `GOOGLE_AI_API_KEY` under the service's **Environment** tab.
-4. Render's free tier spins the service down after 15 minutes idle and takes
-   about a minute to wake back up on the next request — the same "warm it up
-   before demoing" tradeoff as HF's free tier, on a host that doesn't require
-   a paid plan to run a Gradio app at all.
 
 ---
 
