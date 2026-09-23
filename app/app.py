@@ -2,7 +2,7 @@
 
 Three tabs, one process:
 
-  Ask the team   the full agent run; needs GROQ_API_KEY
+  Ask the team   the full agent run; needs GOOGLE_AI_API_KEY
   Explore        semantic search + risk scoring, entirely local; needs no key
   Dashboard      volume, severity mix and issue movement over the corpus
 
@@ -180,7 +180,7 @@ def build_ui() -> gr.Blocks:
         ""
         if llm_available()
         else (
-            "> ⚠️ **GROQ_API_KEY is not set**, so the agent team is offline. "
+            "> ⚠️ **GOOGLE_AI_API_KEY is not set**, so the agent team is offline. "
             "The **Explore** and **Dashboard** tabs run entirely locally and still work."
         )
     )

@@ -196,16 +196,20 @@ Rules:
 - The instant you have nothing further to add, transfer to SynthesisAgent. Never
   end your turn with a plain-text answer and no transfer; that silently ends the
   whole conversation before a brief is written.
+- You also have access to a function named `complete_task`. Never call it — it ends
+  the whole run with a bare one-line summary and discards every finding, including
+  your own, instead of letting SynthesisAgent write the real cited brief. Whatever
+  you're tempted to summarize, call `transfer_to_SynthesisAgent` instead.
 """
 
 
-def build_agent() -> Agent:
+def build_agent(tool_choice: str = "required") -> Agent:
     return build_llm_agent(
         name=NAME,
         description="Computes complaint volume, issue mix and quarter-over-quarter movement.",
         instructions=INSTRUCTIONS,
         plugins=[TrendTools()],
-        # "required": must always either aggregate or transfer — never just
-        # answer in prose and silently end the conversation.
-        tool_choice="required",
+        # See retrieval_agent.build_agent()'s comment on this same parameter —
+        # pipeline mode overrides to "auto" for the same reason.
+        tool_choice=tool_choice,
     )

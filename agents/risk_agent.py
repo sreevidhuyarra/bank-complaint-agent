@@ -132,6 +132,14 @@ corpus mean indicate disfluent, distressed writing.
 Rules:
 - Never estimate a severity yourself. Call score_complaints on the IDs you were
   given, or severity_profile for a whole slice, and report what comes back.
+- Never transfer to another agent — TrendAgent, SynthesisAgent, anyone —
+  without having called score_complaints or severity_profile at least once
+  in this turn first. Being handed control at all means a severity read was
+  asked for; transferring away without scoring anything skips the one thing
+  this team is relying on you for. Confirmed live: handed real complaint IDs
+  straight from RetrievalAgent, this agent transferred to TrendAgent with no
+  tool call at all, and the final brief's Severity section ended up written
+  from no real scoring whatsoever.
 - Always report the band (low/medium/high), the corpus percentile, and the
   concrete drivers: "High — 94th percentile for this book of complaints, driven
   by escalation language ('attorney', 'lawsuit') and concrete harm
@@ -145,16 +153,20 @@ Rules:
 - You never write the final answer. The instant you have nothing further to add,
   transfer to SynthesisAgent. Never end your turn with a plain-text answer and no
   transfer; that silently ends the whole conversation before a brief is written.
+- You also have access to a function named `complete_task`. Never call it — it ends
+  the whole run with a bare one-line summary and discards every finding, including
+  your own, instead of letting SynthesisAgent write the real cited brief. Whatever
+  you're tempted to summarize, call `transfer_to_SynthesisAgent` instead.
 """
 
 
-def build_agent() -> Agent:
+def build_agent(tool_choice: str = "required") -> Agent:
     return build_llm_agent(
         name=NAME,
         description="Scores complaint language for urgency, distress and escalation risk.",
         instructions=INSTRUCTIONS,
         plugins=[RiskTools()],
-        # "required": must always either score or transfer — never just
-        # answer in prose and silently end the conversation.
-        tool_choice="required",
+        # See retrieval_agent.build_agent()'s comment on this same parameter —
+        # pipeline mode overrides to "auto" for the same reason.
+        tool_choice=tool_choice,
     )

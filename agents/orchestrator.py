@@ -29,7 +29,7 @@ from semantic_kernel.agents.orchestration.handoffs import (
     OrchestrationHandoffs,
 )
 from semantic_kernel.agents.runtime import InProcessRuntime
-from semantic_kernel.contents import ChatMessageContent
+from semantic_kernel.contents import ChatMessageContent, FunctionResultContent
 
 from agents import retrieval_agent, risk_agent, synthesis_agent, trend_agent
 from agents.retrieval_agent import format_hits
@@ -56,13 +56,33 @@ Your specialists:
   Works from filters alone and does not need retrieval.
 - SynthesisAgent — writes the final cited brief. Always last.
 
-Routing rules:
+Routing rules — check every clause of the question against all three,
+independently, before routing anywhere:
 - A question about what customers are saying, or about themes → RetrievalAgent.
 - A question mentioning urgency, severity, frustration, tone, escalation or
   "how bad is it" → RetrievalAgent first, then LinguisticRiskAgent.
 - A question about volume, growth, spikes, "rising", "more than last quarter"
   → TrendAgent.
-- Most real questions need two or three of them. Route to each in turn.
+- Most real questions need two or three of them — a question can ask about
+  more than one of these at once, and a strong cue for one ("growing
+  fastest") does not mean the others don't also apply. Confirmed live: "Which
+  issues are growing fastest, and how severe is the language?" was routed to
+  TrendAgent only, on the strength of "growing fastest", and Synthesis then
+  wrote a Severity section from no real scoring at all, since
+  LinguisticRiskAgent (and the RetrievalAgent it depends on) were never
+  called. Treat each clause of a multi-part question as its own routing
+  decision — "how severe" always means RetrievalAgent + LinguisticRiskAgent
+  regardless of what else the question also asks about.
+- When severity/urgency was asked about, RetrievalAgent must be followed by
+  LinguisticRiskAgent specifically, before TrendAgent or Synthesis — not just
+  "eventually". Confirmed live, even after the fix above got RetrievalAgent
+  invoked, it transferred straight to TrendAgent on its own and
+  LinguisticRiskAgent still never ran. LinguisticRiskAgent is the only one of
+  the three with a hard dependency on RetrievalAgent's own output (it needs
+  the complaint IDs Retrieval just found), so once Retrieval has real IDs in
+  hand and severity is part of the question, LinguisticRiskAgent is next,
+  every time — TrendAgent has no such dependency and can run whenever, so it
+  never needs to jump the queue ahead of the one specialist that does.
 - When the specialists have reported, transfer to SynthesisAgent. Never write
   the brief yourself and never call complete_task before Synthesis has run.
 - Some questions ask for something none of your specialists can supply — e.g.
@@ -120,13 +140,26 @@ def build_orchestrator_agent() -> Agent:
     )
 
 
-def build_team() -> dict[str, Agent]:
-    """The five agents. Order matters: the first member receives the question."""
+def build_team(specialist_tool_choice: str = "required") -> dict[str, Agent]:
+    """The five agents. Order matters: the first member receives the question.
+
+    `specialist_tool_choice` only affects Retrieval/Risk/Trend (never the
+    Orchestrator, which pipeline mode doesn't use anyway, or Synthesis, which
+    is always "auto"). Handoff mode needs "required" here — without it, a
+    specialist can answer in prose and silently end the whole conversation
+    before ever calling a tool or handing off. Pipeline mode's `_ask()` calls
+    each specialist exactly once for one directed task with no handoff to
+    protect, so it passes "auto" instead: confirmed live, forcing tool_choice
+    on that single-shot call can leave the agent no way to ever answer in
+    text at all, since the round Gemini's connector falls back to when it
+    gives up forcing still reuses the same forced tool list — this sidesteps
+    that bug by simply not forcing where forcing was never needed.
+    """
     return {
         NAME: build_orchestrator_agent(),
-        retrieval_agent.NAME: retrieval_agent.build_agent(),
-        risk_agent.NAME: risk_agent.build_agent(),
-        trend_agent.NAME: trend_agent.build_agent(),
+        retrieval_agent.NAME: retrieval_agent.build_agent(specialist_tool_choice),
+        risk_agent.NAME: risk_agent.build_agent(specialist_tool_choice),
+        trend_agent.NAME: trend_agent.build_agent(specialist_tool_choice),
         synthesis_agent.NAME: synthesis_agent.build_agent(),
     }
 
@@ -200,8 +233,21 @@ async def run_handoff(
 ) -> Brief:
     """Run the question through SK's handoff orchestration."""
     trace: list[Turn] = []
+    # Raw tool results, captured independently of whether an agent also wrote
+    # prose about them — pipeline mode's citation-matching pool comes from
+    # RetrievalAgent restating its findings as its own text response, but a
+    # handoff-mode agent can call a tool and transfer immediately with no
+    # accompanying prose, so `trace` alone (prose only, see `capture` below)
+    # isn't a reliable source of real complaint IDs to match against. This is
+    # actually more reliable than pipeline mode's approach where it applies:
+    # it's the tool's own verbatim output, never reworded by the model.
+    retrieved_hit_texts: list[str] = []
+    _HIT_PRODUCING_FUNCTIONS = {"search_complaints", "score_complaints"}
 
     def capture(message: ChatMessageContent) -> None:
+        for item in message.items:
+            if isinstance(item, FunctionResultContent) and item.function_name in _HIT_PRODUCING_FUNCTIONS:
+                retrieved_hit_texts.append(str(item.result))
         content = (message.content or "").strip()
         if not content:
             return  # tool-call-only turns carry no prose
@@ -239,8 +285,32 @@ async def run_handoff(
             "Synthesis agent. Try again, or use pipeline mode."
         )
     else:
-        # Worse than a routing failure: this looks like a clean success. Never
-        # let a fabricated ID number reach the screen — see
+        # Same gap _targeted_issue_evidence already closes for pipeline mode,
+        # now applied here too: RetrievalAgent's own semantic search is one
+        # generic query and can easily miss the specific issue categories
+        # Risk/Trend's own tool output highlighted as significant — confirmed
+        # live, a brief's Themes ended up entirely "not confirmed" even though
+        # real evidence for those categories existed in the index, because
+        # the one search Retrieval happened to run was about a different
+        # sub-topic. Pipeline mode has direct access to Trend's own text for
+        # this; handoff mode's equivalent is the specialists' prose already
+        # captured in `trace`.
+        specialist_text = " ".join(
+            turn.content for turn in trace if turn.agent in (trend_agent.NAME, risk_agent.NAME)
+        )
+        evidence_addendum = _targeted_issue_evidence(question, specialist_text)
+
+        # Same citation-attachment step pipeline mode uses (see its own
+        # comment on why Synthesis no longer writes IDs itself) — the hits
+        # pool here comes from actual tool results captured during the run
+        # (see `capture` above) plus the targeted lookup above, not from
+        # re-asking any agent to restate itself. Still followed by the
+        # redaction safety net: attachment only ever inserts IDs it found in
+        # real tool output, but Synthesis is free-text and can still write a
+        # stray bracketed number despite being told not to.
+        hits = _parse_retrieved_hits(*retrieved_hit_texts, evidence_addendum)
+        answer = _attach_citations(answer, hits)
+        # Never let a fabricated ID number reach the screen — see
         # _redact_fabricated_citations. `error` still reflects the fabrication
         # so `auto` mode's fallback logic treats this as a failure worth
         # retrying via pipeline, even though the displayed text is now safe.
@@ -360,11 +430,30 @@ def _redact_fabricated_citations(text: str) -> tuple[str, list[str]]:
 # Deterministic pipeline
 # --------------------------------------------------------------------------- #
 
+# Every specialist's own INSTRUCTIONS (shared with handoff mode, where
+# they're accurate) tell it to call transfer_to_X or complete_task once
+# it's done — functions HandoffOrchestration adds dynamically, which
+# pipeline mode's direct get_response() call never does. Confirmed live: a
+# model trying to follow that instruction with no such function actually
+# available just types the call out as literal text instead of answering
+# ("transfer_to_Orchestrator()"). Prepending this per-call note is far
+# cheaper than forking every agent's core instructions by mode.
+_PIPELINE_MODE_NOTE = (
+    "Note: this is a single direct request in a pipeline with no routing "
+    "model — there is no transfer_to_X or complete_task function available "
+    "here, and nothing else runs after your reply. Ignore any instruction "
+    "about transferring to another agent or calling complete_task; once "
+    "you've done the task below, just write your findings as your answer.\n\n"
+)
+
+
 async def _ask(agent: Agent, prompt: str) -> str:
     # Each pipeline call is independent, so a rate-limit 429 here is retried in
     # place rather than restarting the whole run — unlike a mid-handoff 429,
     # nothing upstream needs to be redone.
-    response = await with_rate_limit_retry(lambda: agent.get_response(messages=prompt))
+    response = await with_rate_limit_retry(
+        lambda: agent.get_response(messages=_PIPELINE_MODE_NOTE + prompt)
+    )
     return (response.message.content or "").strip()
 
 
@@ -450,6 +539,153 @@ def _targeted_issue_evidence(question: str, trend_text: str, per_issue: int = 2)
     )
 
 
+# CFPB complaint IDs are consistently 7-8 digits in this corpus, and nothing
+# else in this domain produces a bare run that long — dates split into
+# 4/2/2-digit groups by hyphens, dollar amounts and percentiles are far
+# shorter. Anchoring on digit-run length alone, not surrounding punctuation,
+# is deliberate: confirmed live across three separate runs, RetrievalAgent's
+# own instructions ask it to report IDs verbatim as "[id]", and it still
+# reformats freely from run to run — "[id]" one time, "Complaint ID: id" with
+# no brackets at all the next. A negative lookbehind excludes a "$"-prefixed
+# run so an unusually large dollar figure can't be mistaken for an ID.
+_HIT_ID_RE = re.compile(r"(?<!\$)\b(\d{7,8})\b")
+
+
+def _parse_retrieved_hits(*texts: str) -> list[tuple[str, str]]:
+    """Extract (complaint_id, surrounding_text) pairs from retrieval/evidence text.
+
+    Matches any ID-shaped digit run anywhere in the text, then takes the span
+    up to the next one as that ID's context — works regardless of whatever
+    formatting the model chose around it, since the anchor is the digits
+    themselves, not brackets or a label.
+    """
+    hits: list[tuple[str, str]] = []
+    for text in texts:
+        if not text:
+            continue
+        matches = list(_HIT_ID_RE.finditer(text))
+        for i, match in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+            hits.append((match.group(1), text[match.start():end]))
+    return hits
+
+
+# `_significant_words` is alphabetic-only ("[a-z]+"), so a dollar amount like
+# "$1,300.00" contributes nothing to it — yet a specific figure is often the
+# one detail that actually distinguishes two similarly-worded themes ("$1300
+# in fees" vs. "$35 on a single transaction"). Normalizing away commas and
+# cents (both "$1,300.00" and "$1300" become "1300") lets a theme and its
+# matching complaint agree on a figure even if one writes it with commas/cents
+# and the other doesn't. A 2+ digit floor skips stray single digits (list
+# markers, a lone "1") that would otherwise match almost anything.
+_NUMERIC_TOKEN_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _numeric_tokens(text: str) -> set[str]:
+    tokens = set()
+    for match in _NUMERIC_TOKEN_RE.finditer(text):
+        cleaned = match.group(0).replace(",", "").split(".")[0]
+        if len(cleaned) >= 2:
+            tokens.add(cleaned)
+    return tokens
+
+
+def _best_matching_ids(theme_text: str, hits: list[tuple[str, str]],
+                        limit: int = 3, min_shared_words: int = 2) -> list[str]:
+    """Which retrieved complaints' text most overlaps this theme's own wording.
+
+    Deterministic keyword overlap, not another model call — the same pattern
+    `_issues_named_in` already uses for matching Trend's issue names. A
+    minimum shared-word count (not just "any overlap") avoids attaching an ID
+    on the strength of one generic word ("account", "fee") shared with
+    everything in the corpus.
+    """
+    theme_words = _significant_words(theme_text) | _numeric_tokens(theme_text)
+    if not theme_words:
+        return []
+    scored = []
+    for complaint_id, block in hits:
+        block_words = _significant_words(block) | _numeric_tokens(block)
+        shared = len(theme_words & block_words)
+        if shared >= min_shared_words:
+            scored.append((shared, complaint_id))
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    picked: list[str] = []
+    seen: set[str] = set()
+    for _, complaint_id in scored:
+        if complaint_id in seen:
+            continue
+        seen.add(complaint_id)
+        picked.append(complaint_id)
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+# Matches from Synthesis's own "**Themes** —" heading up to the next "**Xxx**"
+# heading (or end of text), so only Themes content gets citations attached —
+# Answer/Severity/Trend/What I'd check next are left untouched. The header
+# group deliberately stops at the heading markup itself (not ".*?" up to the
+# first newline) — confirmed live, when Synthesis writes Themes as one
+# paragraph with no newline until the section ends, a lazy ".*?(?:\n|$)"
+# header swallows the *entire paragraph* into the header group, leaving
+# nothing in the body for the paragraph-fallback path to match against.
+# The dash-matching stays on the heading's own line ("[ \t]*", never "\s*",
+# before it) and requires 2+ hyphens or a real em-dash for a plain "-" —
+# confirmed live, an earlier version using "\s*[—-]*\s*" let the leading
+# `\s*` cross the newline after "**Themes**" and then let "[—-]*" consume the
+# *first bullet's own leading hyphen* as if it were heading punctuation,
+# silently stripping that one bullet of its "- " marker so the bullet regex
+# below could no longer see it as a bullet at all.
+_THEMES_SECTION_RE = re.compile(r"(\*\*Themes\*\*[ \t]*(?:—+|-{2,})?[ \t]*\n?)(.*?)(?=\n\*\*\w|\Z)", re.DOTALL)
+# No trailing `\s*` — under MULTILINE, a greedy `\s*` before `$` can cross
+# into and consume a following blank line (`\s` matches `\n` too), which ate
+# the blank line before the next section's heading in testing.
+_BULLET_LINE_RE = re.compile(r"^-\s+\S.*$", re.MULTILINE)
+
+
+def _attach_citations(brief_text: str, hits: list[tuple[str, str]]) -> str:
+    """Insert real complaint-ID citations into Synthesis's Themes bullets.
+
+    Synthesis is no longer asked to write IDs at all (see synthesis_agent.py's
+    module docstring for why) — this is the step that actually adds them,
+    matching each bullet's own wording against what Retrieval genuinely
+    returned. A bullet with no confident match is marked as such rather than
+    left silently uncited or backed by a guess — deliberately including the
+    case where `hits` is empty (no tool that returns complaint IDs was even
+    called this run, e.g. a pure-trend question routed only to TrendAgent):
+    confirmed live, an earlier version of this function returned the brief
+    completely unchanged whenever hits was empty, which meant a theme with
+    zero retrieved evidence behind it looked identical to a properly-cited
+    one. Every theme is always marked one way or the other, never left silent.
+    """
+
+    def _bullet_replacer(match: re.Match) -> str:
+        line = match.group(0)
+        ids = _best_matching_ids(line, hits)
+        if ids:
+            return f"{line} [{', '.join(ids)}]"
+        return f"{line} [no closely-matching complaint found]"
+
+    def _themes_replacer(match: re.Match) -> str:
+        header, body = match.group(1), match.group(2)
+        if not _BULLET_LINE_RE.search(body):
+            # Synthesis wrote Themes as a paragraph instead of the instructed
+            # bulleted list — confirmed live, this happens. Rather than
+            # silently attach nothing, treat the whole body as one block so
+            # at least some real evidence still gets cited.
+            stripped = body.strip()
+            if not stripped:
+                return match.group(0)
+            ids = _best_matching_ids(stripped, hits)
+            suffix = f" [{', '.join(ids)}]" if ids else " [no closely-matching complaint found]"
+            return header + body.rstrip() + suffix + "\n"
+        return header + _BULLET_LINE_RE.sub(_bullet_replacer, body)
+
+    return _THEMES_SECTION_RE.sub(_themes_replacer, brief_text, count=1)
+
+
 async def run_pipeline(
     question: str,
     on_turn: Callable[[Turn], None] | None = None,
@@ -463,7 +699,7 @@ async def run_pipeline(
         if on_turn:
             on_turn(turn)
 
-    team = build_team()
+    team = build_team(specialist_tool_choice="auto")
 
     retrieval = await _ask(
         team[retrieval_agent.NAME],
@@ -506,11 +742,18 @@ async def run_pipeline(
         f"=== TrendAgent ===\n{trend}{evidence_addendum}\n\n"
         "Write the brief.",
     )
-    record(synthesis_agent.NAME, brief)
-    # Same guard as run_handoff — pipeline mode builds Synthesis a clean digest
-    # of real tool output, so this should be rarer here, but Synthesis is
-    # still a free-text model call and can still fabricate.
+    # Synthesis no longer writes complaint-ID citations itself (see
+    # synthesis_agent.py's module docstring) — this is the step that actually
+    # attaches them, by matching each Themes bullet's own wording against what
+    # Retrieval and the targeted issue lookup genuinely returned. It never has
+    # the opportunity to invent an ID, because it's never asked to produce one.
+    hits = _parse_retrieved_hits(retrieval, evidence_addendum)
+    brief = _attach_citations(brief, hits)
+    # Kept as a safety net, not the primary mechanism: catches the rare case
+    # where Synthesis writes a bracketed number itself despite being told not
+    # to, rather than one this step attached.
     brief, fake_ids = _redact_fabricated_citations(brief)
+    record(synthesis_agent.NAME, brief)
     error = (
         f"The brief originally cited complaint ID(s) not found in the indexed "
         f"data (likely fabricated): {', '.join(fake_ids)}. Those citations "
@@ -532,8 +775,8 @@ async def answer(
     """Answer a question. `mode` is 'auto', 'handoff' or 'pipeline'."""
     if not llm_available():
         raise MissingApiKey(
-            "GROQ_API_KEY is not set — the agent team cannot run. The Explore tab "
-            "still works without it, since search and risk scoring are local."
+            "GOOGLE_AI_API_KEY is not set — the agent team cannot run. The Explore "
+            "tab still works without it, since search and risk scoring are local."
         )
 
     if mode == "pipeline":
@@ -541,10 +784,10 @@ async def answer(
     if mode == "handoff":
         return await run_handoff(question, on_turn)
 
-    # A transient failure mid-handoff (a rate limit, or gpt-oss occasionally
+    # A transient failure mid-handoff (a rate limit, or the model occasionally
     # mis-forming a tool call) can't be resumed from where it broke — the whole
-    # run restarts. That's wasteful of the same tight token budget that likely
-    # caused it, so only one restart is attempted before giving up to pipeline.
+    # run restarts. That's wasteful of the same budget that likely caused it,
+    # so only one restart is attempted before giving up to pipeline.
     note = ""
     for attempt in range(2):
         try:

@@ -1,9 +1,6 @@
 # Agent orchestration
 semantic-kernel>=1.44,<2
-openai>=1.60          # transport for the Groq provider (LLM_PROVIDER=groq, the default)
-
-# Uncomment for the Google provider (LLM_PROVIDER=google) — not needed for Groq.
-# google-genai>=1.51,<1.75
+google-genai>=1.51,<1.75   # Gemini via Google AI Studio — the only LLM this project uses
 
 # Retrieval
 sentence-transformers>=3.0

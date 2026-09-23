@@ -122,218 +122,75 @@ black box.
 
 - **`handoff`** — Semantic Kernel's `HandoffOrchestration`. The routing model
   decides which specialists to involve and in what order. This is the pattern
-  the project is about, and the one AI-102/AI-103 examines.
+  the project is about.
 - **`pipeline`** — a deterministic retrieval → risk → trend → synthesis
   sequence with no routing model in the loop.
 
 `auto` (the default) runs handoff and falls back to pipeline if it fails or
-returns nothing usable. This isn't a theoretical hedge — it's load-bearing.
-Tested against a real Groq key, handoff mode fails outright on a sizeable share
-of runs (see "Rate limits and model reliability" below), almost always because
-of a Groq-side model-compliance glitch rather than a bug in this code, and
-`auto` transparently recovers every time in testing. The UI shows which mode
-actually produced the answer, plus a note when it had to fall back.
+returns nothing usable. This isn't a theoretical hedge — it's load-bearing:
+handoff mode depends on a routing model reliably calling the right function at
+every step, and a live model doesn't always cooperate (see below). The UI
+shows which mode actually produced the answer, plus a note when it had to
+fall back.
 
-### Rate limits and model reliability, measured
+### Routing silently skipped
 
-Groq retired `llama-3.3-70b-versatile` at some point after this project's spec
-was written; the default model is now `openai/gpt-oss-120b`. Every
-tool-calling-capable model on Groq's free tier — checked directly against a real
-key via `GET /openai/v1/models` and a probe request to each — shares the same
-ceilings: **8,000 tokens/minute, 1,000 requests/minute, and a separate 200,000
-tokens/day**. The daily cap is easy to miss until a demo session actually hits
-it — the same key can run fine for an hour and then fail outright with no
-per-minute warning beforehand. Groq's own agentic `compound`/`compound-mini`
-models have a much higher per-minute ceiling (70,000 TPM) but reject custom
-tool definitions outright (`tool calling is not supported with this model`),
-so they aren't an option here regardless of budget.
+The single most persistent failure across this project — "Task is completed
+with summary: No handoff agent name provided..." — comes down to
+`FunctionChoiceBehavior.Auto()` genuinely *permitting* an agent to answer in
+plain text instead of calling a tool, with no prompt wording forcing
+compliance. It's a real option the model is free to take. The fix isn't a
+patch, it's a policy change: [agents/kernel_setup.py](agents/kernel_setup.py)
+runs the Orchestrator and all three specialists — every one of which is
+designed to always end its turn by calling a domain tool or a `transfer_to_*`
+— with `FunctionChoiceBehavior.Required()` instead, which maps to Gemini's
+`function_calling_config.mode = "ANY"`, a genuinely forced tool call.
+SynthesisAgent is the deliberate exception — its entire job is answering in
+prose, so it keeps `Auto()`.
 
-That budget is tight for a 5-agent handoff pattern, where every specialist
-re-reads the growing shared transcript, and it surfaces as four distinct
-failure modes this project actually hit and now handles:
+Two structural gaps compounded this, both real bugs independent of the model:
+every specialist's prompt covered routing to *another specialist* for more
+analysis, but never covered "I have nothing further to add" — so a specialist
+invoked a second time (e.g. Retrieval, asked to fetch examples for a trend
+Trend already found) would just summarize in prose and end the run with no
+transfer at all. And SynthesisAgent had *zero* outgoing edges in the handoff
+graph despite the Orchestrator being allowed to route to it as the very first
+move — so if that happened before any specialist had gathered real evidence,
+Synthesis's only option was to give up via `complete_task` with no way to ask
+for real routing first. Both are fixed now: every specialist is explicitly
+told to close out to Synthesis, and Synthesis can hand back to the
+Orchestrator when it's reached with nothing to work with.
 
-1. **Per-minute 429s.** Expected under this budget; Groq's own error message
-   quotes a sub-second recovery time, so `kernel_setup.with_rate_limit_retry`
-   retries with backoff rather than failing the turn.
-2. **Per-day 429s.** Groq quotes a recovery wait here too, but it can be
-   minutes long — sitting through that inside a live web request would just
-   hang the UI with no feedback. Past a threshold (`_MAX_INLINE_WAIT`, 20s),
-   the retry helper stops retrying and raises `QuotaExhausted` immediately with
-   the actual wait quoted back, and the UI shows that plainly instead of a raw
-   traceback. (An earlier version of this parser also mis-read Groq's compound
-   duration format — `"3m8.352s"` — as 3 *minutes*, because a regex alternation
-   matched the bare `m` before trying `ms`/`m`/`s` in the right order; it's
-   covered by a unit test now.)
-3. **Tool-name drift.** `gpt-oss-120b` reliably calls SK's own `transfer_to_*`
-   handoff functions by their full name, but often drops the plugin prefix SK
-   adds to this project's own tools — calling `search_complaints` when the
-   declared name is `RetrievalTools-search_complaints`. Groq's server validates
-   the model's tool call against the declared list and rejects the mismatch
-   with a 400 *before SK's own, already-tolerant name resolver ever sees it*
-   (`Kernel.get_function` already searches every plugin by bare name when no
-   plugin prefix is given). `agents/groq_compat.py` closes that gap on the
-   request side: it patches every outgoing request to declare each tool under
-   both its qualified and bare name, so whichever one the model calls, Groq
-   accepts it.
-4. **Occasional malformed tool calls.** Rarely, `gpt-oss-120b` emits invalid
-   JSON arguments, omits a required argument, or tries to call a tool on a turn
-   SK had force-closed with `tool_choice: "none"`. All three are sampling
-   noise, not deterministic — `with_rate_limit_retry` retries these too, and
-   `answer()` restarts a failed handoff run once before giving up to pipeline.
+Even with forcing in place, a specialist invoked as part of a multi-part
+question can pick just one of its clauses to act on and route past the rest —
+confirmed live, "which issues are growing fastest, **and how severe is the
+language**" got routed to volume analysis only, and the brief's severity
+section ended up written from no real scoring at all. The Orchestrator's
+routing rules now explicitly call out treating each clause of a multi-part
+question as its own routing decision, and RetrievalAgent is told which
+specialist depends on its own output (LinguisticRiskAgent) so it doesn't skip
+past it to whichever specialist is otherwise easier to hand off to.
 
-None of this is a knock on Semantic Kernel's handoff implementation, which is
-solid — it's what a genuinely free tool-calling model tier costs on Groq today.
-Building around it, rather than assuming a reliable model, is the actual
-engineering content here.
+### Citations are attached by code, never written by the model
 
-### Routing silently skipped — a separate, deeper issue than the budget above
+Synthesis used to be asked to write a complaint ID at the end of every theme
+it described. A model under pressure to satisfy "every theme needs an ID"
+will sometimes invent a plausible-looking number instead of admitting it has
+none — confirmed live, repeatedly, with different fake IDs each time,
+including after the prompt was tightened more than once to explicitly forbid
+it. Prompting alone doesn't reliably prevent it, because RAG only puts real
+documents in the model's context — it doesn't stop the model from generating
+something that was never actually retrieved.
 
-The single most persistent failure across this whole project — "Task is
-completed with summary: No handoff agent name provided..." — isn't caused by
-Groq's tight budget above. It hit Gemini too, with none of that budget
-pressure, so it has a different root cause: `FunctionChoiceBehavior.Auto()`
-genuinely *permits* an agent to answer in plain text instead of calling a
-tool, and no prompt wording forces compliance — it's a real option the model
-is free to take, on either provider. The fix isn't a patch, it's a policy
-change: [agents/kernel_setup.py](agents/kernel_setup.py) now runs the
-Orchestrator and all three specialists — every one of which is designed to
-always end its turn by calling a domain tool or a `transfer_to_*` — with
-`FunctionChoiceBehavior.Required()` instead, which maps to a genuinely forced
-tool call (Gemini's `function_calling_config.mode = "ANY"`; a forced
-`tool_choice` on Groq's OpenAI-shaped API). SynthesisAgent is the deliberate
-exception — its entire job is answering in prose, so it keeps `Auto()`.
-
-Two structural gaps compounded this on the Gemini side specifically, both real
-bugs independent of the model itself: every specialist's prompt covered
-routing to *another specialist* for more analysis, but never covered "I have
-nothing further to add" — so a specialist invoked a second time (e.g.
-Retrieval, asked to fetch examples for a trend Trend already found) would just
-summarize in prose and end the run with no transfer at all. And SynthesisAgent
-had *zero* outgoing edges in the handoff graph despite the Orchestrator being
-allowed to route to it as the very first move — so if that happened before any
-specialist had gathered real evidence, Synthesis's only option was to give up
-via `complete_task` with no way to ask for real routing first. Both are fixed
-now: every specialist is explicitly told to close out to Synthesis, and
-Synthesis can hand back to the Orchestrator when it's reached with nothing to
-work with.
-
-### Switching providers — Groq, Google AI Studio, or Azure OpenAI
-
-`config.LLM_PROVIDER` (env var, default `groq`) selects which LLM backs every
-agent — `groq`, `google`, `azure`, or `azure_responses`. Every agent file
-calls [agents/kernel_setup.py](agents/kernel_setup.py)'s `build_agent()`
-factory rather than constructing an `Agent` directly, so the switch — even for
-`azure_responses`, which needs a genuinely different `Agent` class — stays
-contained to that one file.
-
-`google` switches the whole team to Gemini via Google AI Studio, through
-Semantic Kernel's own native `GoogleAIChatCompletion` connector — no
-OpenAI-shim trick needed there, since Google (like Anthropic) ships a
-first-party SK connector rather than mimicking OpenAI's wire format.
-
-```bash
-pip install "google-genai>=1.51,<1.75"   # not needed for the default Groq path
-export LLM_PROVIDER=google
-export GOOGLE_AI_API_KEY=...             # free key: https://aistudio.google.com
-python app.py
-```
-
-**A real bug this surfaced, and its fix.** The first live test against a real
-key hit a hardcoded `role="function"` in Semantic Kernel 1.44.1's own
-`GoogleAIChatCompletion._prepare_chat_history_for_request` (the latest
-published SK release at the time — no newer version exists to pull the fix
-from) — Google's current API rejects that role outright: `400 ... "Role
-'function' is not supported. Please use a valid role: SYSTEM, ..., MODEL,
-USER."` [agents/google_compat.py](agents/google_compat.py) subclasses the
-connector with just that one line changed to `role="user"` — the role
-Gemini's own function-calling convention uses for returning a tool result —
-everything else in the connector (request building, response parsing,
-streaming) is untouched. `kernel_setup.py`'s Google branch uses this patched
-class transparently; nothing above it needs to know the patch exists.
-
-Two things this still hasn't been validated against, since they need a real
-Google key and a genuinely completed run to observe:
-
-- **Handoff-mode reliability end-to-end.** The role bug above is now fixed,
-  but the *other* failure modes that made Groq's `gpt-oss-120b` unreliable for
-  handoff — dropped tool-name prefixes, malformed JSON arguments, ignoring a
-  forced stop — are separate, model-specific quirks nobody documents. Gemini
-  may or may not hit any of them; only a full live run says for sure.
-- **The exact free-tier rate limits and the `Retry-After` shape of a real 429.**
-  `with_rate_limit_retry` recognizes Google's error types by reading the
-  `google-genai` package's source (`google.genai.errors.APIError.code`), but
-  the wait-time parsing for Google (a `Retry-After` header guess) is unverified
-  against an actual captured error, unlike Groq's regex, which is tuned
-  against real ones. Check your account's actual limits at
-  `aistudio.google.com/rate-limit` rather than assuming Groq's shape carries over.
-
-`azure` points the whole team at your own Azure OpenAI deployment, through
-SK's native `AzureChatCompletion` connector. Azure OpenAI's wire format *is*
-OpenAI's, so it needs no compatibility shim (unlike Groq) and no new
-dependency (unlike Google) — the `openai` package this project already
-depends on ships `AsyncAzureOpenAI`, and Azure's errors are the same
-`openai.RateLimitError` / `openai.APIError` types the retry logic already
-handles. Reasoning-family deployments need `azure_responses` instead — see
-below.
-
-```bash
-export LLM_PROVIDER=azure
-export AZURE_OPENAI_API_KEY=...      # never put this in config.py
-export AZURE_DEPLOYMENT=your-deployment-name  # optional, defaults to what's in config.py
-python app.py
-```
-
-The endpoint is the one piece of Azure configuration that lives in
-[config.py](config.py) (`AZURE_ENDPOINT`) rather than an env var — deliberately:
-it's project-specific configuration visible in your own Azure portal, not a
-secret, unlike the API key. It must be the *base* resource URL only (e.g.
-`https://<resource-name>.openai.azure.com/`) — never a full request URL with a
-path or `?api-version=...`; the SDK builds the correct path itself per
-endpoint type. `AZURE_DEPLOYMENT` is your own deployment's alias (e.g.
-`gpt-6-astra`) — a name you chose in Azure AI Foundry, not a public model
-name, so there's no "is this still current" check to run the way there is for
-`GROQ_MODEL`/`GOOGLE_MODEL`.
-
-#### `azure_responses` — when your deployment needs the Responses API instead
-
-Some Azure deployments — confirmed live against a real reasoning-family
-model — reject tool/function calling on the Chat Completions endpoint
-entirely: `"Function tools with reasoning_effort are not supported for
-<deployment> in /v1/chat/completions... To use function tools, use
-/v1/responses."` Setting `reasoning_effort` to `"none"` as that error
-suggests doesn't help either — a *second* live error showed this specific
-model doesn't accept `"none"` at all, only `"low"/"medium"/"high"/"xhigh"`.
-The two errors together mean there's no working parameter combination on Chat
-Completions; the model genuinely requires the different API surface.
-
-`azure_responses` is that different surface — a fourth provider value using
-SK's `AzureResponsesAgent`, a genuinely different *Agent* class (not just a
-different service) since the Responses API isn't wire-compatible with Chat
-Completions. This is the one provider that needed [agents/kernel_setup.py](agents/kernel_setup.py)'s
-`build_agent()` factory instead of a swap inside the existing
-`ChatCompletionAgent` path — every agent file in the project calls that
-factory now, so this difference stays contained to one function rather than
-touching all five agent files' construction logic directly.
-
-```bash
-export LLM_PROVIDER=azure_responses
-export AZURE_OPENAI_API_KEY=...
-export AZURE_DEPLOYMENT=your-reasoning-deployment-name
-python app.py
-```
-
-Two things worth knowing about this path specifically:
-
-- **No per-agent token limit.** `max_output_tokens` is a per-invocation
-  parameter on this SK agent class, not a constructor default, and
-  `HandoffOrchestration` drives every invocation internally with no hook to
-  pass one through. Each agent uses the model's own default output length
-  instead — not a real loss, since an artificial cap is exactly what caused
-  the "truncated mid-thought" problem with Gemini's hidden reasoning tokens
-  elsewhere in this project.
-- **Reasoning effort is hardcoded to `"low"`** in `kernel_setup.py`, chosen for
-  speed on what these agents actually do (routing decisions, short reports).
-  Raise it if a deployment's answers come back shallow.
+Synthesis no longer writes IDs at all. It describes each theme in plain
+prose, and `agents/orchestrator.py`'s `_attach_citations` matches that
+description's own wording against whatever was genuinely retrieved this
+session — deterministic keyword overlap, not another model call — and inserts
+the real ID afterward. A theme with no confident match is explicitly marked
+`[no closely-matching complaint found]` rather than left silently uncited
+(which would look identical to a properly-cited one) or backed by a weak
+guess. The result: every complaint ID on screen is guaranteed real, and every
+gap is honestly flagged instead of papered over.
 
 ## Running it
 
@@ -345,12 +202,13 @@ pip install -r requirements.txt
 python -m data.fetch_cfpb      # pulls ~10k complaints from the CFPB API (no key needed)
 python -m data.ingest          # cleans, fits the corpus LM, scores, embeds, builds FAISS
 
-export GROQ_API_KEY=gsk_...    # free key: https://console.groq.com/keys
+export GOOGLE_AI_API_KEY=...   # free key: https://aistudio.google.com
 python app.py                  # http://localhost:7860
 ```
 
 The **Explore** and **Dashboard** tabs work with no API key at all — semantic
-search and the risk scorer are entirely local. Only the agent team needs Groq.
+search and the risk scorer are entirely local. Only the agent team needs a
+Google AI Studio key.
 
 Useful flags:
 
@@ -374,7 +232,7 @@ minimum narrative length.
 | Embeddings | `all-MiniLM-L6-v2`, local | $0 |
 | Vector index | FAISS `IndexFlatIP` (cosine, exact) | $0 |
 | Orchestration | Semantic Kernel (Python) | $0 |
-| LLM | Groq · `openai/gpt-oss-120b` | $0 free tier |
+| LLM | Google AI Studio · Gemini | $0 free tier |
 | App | Gradio | $0 |
 | Hosting | Render, free Python web service | $0 |
 
@@ -397,7 +255,7 @@ have HF Pro already, the original steps still work:
 
 1. **New Space → Gradio SDK → CPU Basic**.
 2. Push this repo to the Space, or connect the GitHub repo directly.
-3. Add `GROQ_API_KEY` under **Settings → Variables and secrets**. Never commit it.
+3. Add `GOOGLE_AI_API_KEY` under **Settings → Variables and secrets**. Never commit it.
 4. The built index in `index/` is committed (~33 MB), so the Space boots without
    re-fetching CFPB data. `index/embeddings.npy` is *not* committed — those
    vectors already live inside `complaints.faiss` and are reconstructed at load
@@ -415,7 +273,7 @@ Docker required), with no card needed to get started:
 2. **Build command:** `pip install -r requirements.txt`
    **Start command:** `python app.py`
    (`app.py` already reads Render's `PORT` env var — see [app/app.py](app/app.py).)
-3. Add `GROQ_API_KEY` under the service's **Environment** tab.
+3. Add `GOOGLE_AI_API_KEY` under the service's **Environment** tab.
 4. Render's free tier spins the service down after 15 minutes idle and takes
    about a minute to wake back up on the next request — the same "warm it up
    before demoing" tradeoff as HF's free tier, on a host that doesn't require
@@ -436,8 +294,7 @@ bank-complaint-agent/
 │   ├── embeddings.py          # sentence-transformers wrapper
 │   └── linguistic_risk.py     # hedging / urgency / harm / SLOR scoring
 ├── agents/
-│   ├── kernel_setup.py        # Semantic Kernel wiring, provider switch, retry/backoff
-│   ├── groq_compat.py         # Groq tool-call name compatibility shim (see README)
+│   ├── kernel_setup.py        # Semantic Kernel wiring, retry/backoff
 │   ├── google_compat.py       # Gemini role="function" bug fix (see README)
 │   ├── orchestrator.py        # handoff graph, pipeline fallback
 │   ├── retrieval_agent.py
@@ -456,10 +313,6 @@ bank-complaint-agent/
 - **Pagination.** The CFPB search API documents a `frm` offset parameter that is
   silently ignored — every offset returns the same first page. `fetch_cfpb.py`
   pages by *date window* instead, requesting each month whole.
-- **Groq via Semantic Kernel.** SK's `OpenAIChatCompletion` has no `base_url`
-  argument, so Groq is reached by injecting an `openai.AsyncOpenAI` client built
-  against Groq's base URL. That is the only provider-specific line in the project
-  ([`agents/kernel_setup.py`](agents/kernel_setup.py)).
 - **Publication lag.** CFPB publishes narratives on a delay, so the newest weeks
   are thin. The Trend agent flags an incomplete quarter and reports daily pace
   rather than letting a partial period read as a decline.

@@ -105,23 +105,40 @@ Rules:
   question is outside the indexed coverage.
 - Report the complaints you found verbatim, keeping every complaint ID intact.
   IDs are how the final brief cites its evidence, so never paraphrase them away.
-- When the question also needs a severity read or a volume trend, hand off to the
-  agent that owns it rather than guessing.
+- When the question also needs a severity read, transfer to LinguisticRiskAgent
+  specifically — never TrendAgent, even if the question also asks about volume
+  or growth. LinguisticRiskAgent needs the complaint IDs you just found; TrendAgent
+  doesn't need anything from you and can run independently of when you hand off,
+  so it never has a reason to go ahead of LinguisticRiskAgent. Confirmed live:
+  transferring to TrendAgent when severity was also asked about skipped
+  LinguisticRiskAgent for the rest of the conversation, and Synthesis ended up
+  writing a Severity section with no real scoring behind it at all.
 - You never write the final answer. The instant you have nothing further to add —
   including the second time you're brought in, e.g. to fetch examples for a trend
   another agent found — transfer to SynthesisAgent. Never end your turn with a
   plain-text answer and no transfer; that silently ends the whole conversation
   before a brief is ever written.
+- You also have access to a function named `complete_task`. Never call it — it ends
+  the whole run with a bare one-line summary and discards every finding, including
+  your own, instead of letting SynthesisAgent write the real cited brief. Whatever
+  you're tempted to summarize, call `transfer_to_SynthesisAgent` instead.
 """
 
 
-def build_agent() -> Agent:
+def build_agent(tool_choice: str = "required") -> Agent:
     return build_llm_agent(
         name=NAME,
         description="Finds relevant CFPB complaint narratives by semantic search.",
         instructions=INSTRUCTIONS,
         plugins=[RetrievalTools()],
-        # "required": must always either search or transfer — never just
-        # answer in prose and silently end the conversation.
-        tool_choice="required",
+        # "required" (handoff mode's default): must always either search or
+        # transfer — never just answer in prose and silently end the
+        # conversation. Pipeline mode overrides this to "auto" — confirmed
+        # live: forcing tool_choice on a single-shot get_response() call can
+        # leave the agent no way to ever answer in text, since the round
+        # Gemini's connector falls back to when it gives up forcing still
+        # reuses the same forced tool list. Pipeline mode has no multi-turn
+        # routing to protect with forcing in the first place, so the simpler
+        # fix here is to just not force it.
+        tool_choice=tool_choice,
     )

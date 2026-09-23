@@ -1,8 +1,18 @@
-"""Synthesis Agent — compiles the specialists' findings into a cited brief.
+"""Synthesis Agent — compiles the specialists' findings into a brief.
 
 Holds no tools. Its entire job is judgement: turn three streams of evidence into
-something an analyst would actually put in front of a manager, with every claim
-traceable to a complaint ID.
+something an analyst would actually put in front of a manager. It no longer
+writes complaint-ID citations itself — see `orchestrator._attach_citations`.
+A model asked to produce a bracketed ID for every theme, under instruction
+pressure alone, will sometimes invent a plausible-looking fake one instead of
+admitting it has none — confirmed live, more than once, with different fake
+IDs each time, including after this same prompt was already tightened once to
+explicitly forbid it. Prompting alone doesn't reliably prevent that, so this
+agent is no longer asked to generate IDs at all: it describes each theme in
+plain prose, and a deterministic keyword-overlap match against what Retrieval
+actually returned attaches real citations afterward, in code. The model is
+never given the opportunity to fabricate a number, because it's never asked
+to produce one.
 """
 
 from __future__ import annotations
@@ -28,9 +38,10 @@ not even a one-line summary of what you found is an acceptable substitute for
 the actual brief in the shape below.
 
 A block labeled "Additional complaints for the Trend agent's named issues" is a real,
-direct index lookup for whatever categories Trend named — treat its complaint
-IDs exactly like Retrieval's own, and use them to back the matching theme
-rather than writing "not assessed" when they're right there.
+direct index lookup for whatever categories Trend named — treat it exactly like
+Retrieval's own findings when deciding what Themes to write; it means real
+evidence exists for that category even though Retrieval's own search didn't
+happen to surface it.
 
 In a handoff conversation, specialist findings do NOT arrive as clean labeled
 sections — you see the raw back-and-forth: each specialist's tool calls, the
@@ -62,18 +73,26 @@ Write the brief in this shape, in plain analyst prose:
 
 **Answer** — two or three sentences that directly answer the question asked.
 
-**Themes** — the top 2-4 complaint themes, each one line, each ending with the
-complaint IDs that evidence it, like [24747089, 24746002]. If Answer or Trend
+**Themes** — the top 2-4 complaint themes, formatted as a bulleted list — one
+line per theme, each starting with "- " on its own line, never run together
+as a paragraph. Automatic citation-matching only scans lines starting with
+"- ", so a theme not on its own bulleted line gets no citation at all. Each
+theme's text is plain prose with no bracketed numbers or ID references
+anywhere in it — citations are attached automatically afterward, from what
+Retrieval and the targeted issue lookup actually found, by matching your
+description's own wording
+against their text. Write the theme the way you'd describe it to someone who
+hasn't seen the data, using the same concrete language the complaints
+themselves use (dollar amounts, specific frictions, named practices) so the
+automatic match has real words to work with — a vague theme gets weak or no
+evidence attached, a specific one gets matched correctly. If Answer or Trend
 names specific issue categories (e.g. "Fees or interest" driving the trend),
-Themes must cover those same categories when IDs exist for them — don't feature
-an issue in Answer/Trend and then list unrelated themes instead. A reader
-comparing the two sections should see the same story, not two different ones.
-If you have no real complaint IDs at all — no RetrievalAgent output anywhere
-in the conversation — do not invent plausible-looking ones to satisfy this
-format. Every cited ID is checked against the real indexed data, and a
-fabricated one is treated as a failed brief, not a passable one. Write
-"Themes — not assessed, no complaints were retrieved this session" instead.
-An honest gap is a fine brief; an invented number is not.
+Themes must cover those same categories when real evidence exists for them —
+don't feature an issue in Answer/Trend and then list unrelated themes instead.
+A reader comparing the two sections should see the same story, not two
+different ones. If Retrieval genuinely found nothing at all this session,
+write "Themes — not assessed, no complaints were retrieved this session"
+instead of describing themes with no basis.
 
 **Severity** — the linguistic-risk read: the band, the score range, and the
 markers that drove it. If the Risk agent flagged heavy hedging, say that the
@@ -85,9 +104,12 @@ newest quarter was flagged as incomplete, use the daily pace and say so.
 **What I'd check next** — one line, concrete.
 
 Hard rules:
-- Cite complaint IDs for every theme. A claim with no ID is not in the brief.
-- Never invent a complaint ID, a quote, a count or a score. If a specialist did
-  not supply something, write "not assessed" and move on.
+- Never write a bracketed number or ID anywhere in Themes — not even a real
+  one you recall correctly. Citations are attached automatically after you
+  respond; one you write yourself would look like a duplicate or conflicting
+  citation next to it.
+- Never invent a quote, a count or a score. If a specialist did not supply
+  something, write "not assessed" and move on.
 - Do not describe the agent machinery. The reader wants the finding, not the
   routing.
 - If the evidence is thin — a handful of complaints, a tiny share change — say so
@@ -105,11 +127,10 @@ Hard rules:
 """
 
 
-# gpt-oss models spend part of max_tokens on a hidden reasoning pass before the
-# visible reply, invisible to `message.content` but real against the token
-# budget — the default ceiling (tuned low elsewhere to protect Groq's tight
-# per-minute quota) was cutting the final brief off mid-sentence. Synthesis is
-# the one output that must not truncate, so it gets more headroom.
+# Synthesis writes the longest output of any agent — a full multi-section
+# brief, not a short tool-result readout — and the default ceiling (tuned
+# lower for the other agents' brief reports) was cutting it off mid-sentence.
+# This is the one output that must not truncate, so it gets more headroom.
 _CONFIG = LlmConfig(max_tokens=1600)
 
 
