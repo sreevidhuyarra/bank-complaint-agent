@@ -1,0 +1,21 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.idea/
+.vscode/
+.DS_Store
+
+# Raw API pull — reproducible with `python -m data.fetch_cfpb`, and large.
+cache/
+
+# Built artefacts under index/ ARE committed so the Space boots without
+# re-fetching CFPB data — see "Deploying" in the README. Uncomment to keep the
+# repo lean and build the index on first boot instead.
+# index/
+
+# …except the embedding matrix, which is a duplicate of the vectors already in
+# complaints.faiss. It is reconstructed from the index at load time, and kept
+# locally only to make `ingest --reuse-embeddings` fast.
+index/embeddings.npy
